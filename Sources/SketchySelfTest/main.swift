@@ -2020,6 +2020,39 @@ windowSection("cut and paste follow the selected layer") {
     controller.window?.close()
 }
 
+windowSection("layer thumbnails are cached and downsampled") {
+    let doc = Document(width: 512, height: 512, background: .white)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    let size = NSSize(width: 34, height: 34)
+
+    let first = layer.thumbnail(size: size)
+    check(layer.thumbnail(size: size) === first, "a second ask reuses the rendering")
+    // One slot: asking for another size drops what was cached.
+    check(layer.thumbnail(size: NSSize(width: 48, height: 48)) !== first, "a different size is its own")
+
+    // Committing an edit is what makes a thumbnail stale.
+    let base = layer.thumbnail(size: size)
+    layer.fill(with: .red)
+    check(layer.thumbnail(size: size) === base, "an uncommitted change keeps the old one")
+    doc.commit("Fill")
+    check(layer.thumbnail(size: size) !== base, "the commit invalidates it")
+
+    // The two-step downsample has to land on the same picture, not a blank.
+    guard let full = layer.image, let small = Layer.downsampled(full, fitting: size) else {
+        check(false, "downsampling produced nothing"); fatalError("no thumbnail")
+    }
+    equal(small.width, 34, "downsampled to the size asked for")
+    let probe = Layer(width: 34, height: 34, name: "probe")
+    probe.draw(image: small)
+    let pixel = PixelOps.sample(probe, x: 17, y: 17)
+    check((pixel?.r ?? 0) > 200 && (pixel?.g ?? 255) < 80, "and keeps the colour it was")
+
+    // Small images are handed back untouched rather than resampled twice.
+    check(Layer.downsampled(probe.image!, fitting: NSSize(width: 64, height: 64)) === probe.image! ||
+          Layer.downsampled(probe.image!, fitting: NSSize(width: 64, height: 64)).map { $0.width == 34 } == true,
+          "an image already smaller than the target is left alone")
+}
+
 section("the checkerboard only draws what shows")
 do {
     // Rendering a slice must give the same squares as rendering the lot: the

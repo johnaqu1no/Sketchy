@@ -68,6 +68,9 @@ final class Document {
     }
 
     func commit(_ title: String) {
+        // Anything cached from the pixels — the palette thumbnails — is stale
+        // as of this edit.
+        for layer in layers { layer.revision += 1 }
         history.push(snapshot(title: title))
         isDirty = true
         onChange?()

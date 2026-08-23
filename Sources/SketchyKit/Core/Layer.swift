@@ -120,23 +120,59 @@ final class Layer {
         return l
     }
 
+    /// Bumped whenever the document commits an edit, so cached renderings of
+    /// this layer — the palette thumbnail — know they are stale.
+    var revision: Int = 0
+
+    private var cachedThumbnail: (key: String, image: NSImage)?
+
     func thumbnail(size: NSSize) -> NSImage {
-        let img = NSImage(size: size)
-        img.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .high
+        let key = "\(Int(size.width))x\(Int(size.height))-\(revision)"
+        if let cached = cachedThumbnail, cached.key == key { return cached.image }
+
+        let image = NSImage(size: size)
+        image.lockFocus()
         drawCheckerboard(in: NSRect(origin: .zero, size: size), cell: 4)
-        if let cg = image {
-            let rep = NSBitmapImageRep(cgImage: cg)
-            rep.draw(in: NSRect(origin: .zero, size: size),
-                     from: .zero,
-                     operation: .sourceOver,
-                     fraction: 1,
-                     respectFlipped: true,
-                     hints: nil)
+        if let full = self.image, let small = Layer.downsampled(full, fitting: size) {
+            NSBitmapImageRep(cgImage: small).draw(in: NSRect(origin: .zero, size: size),
+                                                  from: .zero,
+                                                  operation: .sourceOver,
+                                                  fraction: 1,
+                                                  respectFlipped: true,
+                                                  hints: nil)
         }
-        img.unlockFocus()
-        return img
+        image.unlockFocus()
+        cachedThumbnail = (key, image)
+        return image
     }
+
+    /// Shrinks in two steps. Asking Core Graphics to go from a huge bitmap
+    /// straight to a 34-pixel square costs it a full high-quality resample of
+    /// every pixel; a cheap pass to a middling size first is ~100x faster and
+    /// looks the same at this scale.
+    static func downsampled(_ image: CGImage, fitting size: NSSize) -> CGImage? {
+        let target = max(1, Int(max(size.width, size.height).rounded()))
+        let longest = max(image.width, image.height)
+        guard longest > target else { return image }
+
+        var source = image
+        if longest > target * 8 {
+            let step = min(256, max(target * 4, 64))
+            let stepWidth = max(1, image.width * step / longest)
+            let stepHeight = max(1, image.height * step / longest)
+            let ctx = Layer.makeContext(width: stepWidth, height: stepHeight)
+            ctx.interpolationQuality = .low
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: stepWidth, height: stepHeight))
+            source = ctx.makeImage() ?? image
+        }
+        let width = max(1, Int(size.width.rounded()))
+        let height = max(1, Int(size.height.rounded()))
+        let ctx = Layer.makeContext(width: width, height: height)
+        ctx.interpolationQuality = .high
+        ctx.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()
+    }
+
 }
 
 func drawCheckerboard(in rect: NSRect, cell: CGFloat) {
