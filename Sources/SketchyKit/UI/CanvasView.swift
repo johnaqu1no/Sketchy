@@ -241,7 +241,13 @@ final class CanvasView: NSView {
         dirtyRect.intersection(bounds).fill()
 
         let r = imageRect
+        // Bound the board by what is on screen whatever asked for the redraw:
+        // a request to draw the whole view would otherwise walk every square
+        // of a hugely zoomed canvas.
+        ctx.saveGState()
+        ctx.clip(to: visibleRect.insetBy(dx: -16, dy: -16))
         drawCheckerboard(in: r, cell: 8)
+        ctx.restoreGState()
 
         // Only the visible slice of the document is composited, at the size it
         // is about to be drawn. A 20000 x 20000 canvas then costs the same to
