@@ -10,7 +10,7 @@ enum PixelOps {
     struct RGBA { var r: UInt8; var g: UInt8; var b: UInt8; var a: UInt8 }
 
     static func sample(_ layer: Layer, x: Int, y: Int) -> RGBA? {
-        guard let d = layer.data, x >= 0, y >= 0, x < layer.width, y < layer.height else { return nil }
+        guard let d = layer.pixels, x >= 0, y >= 0, x < layer.width, y < layer.height else { return nil }
         let row = layer.height - 1 - y
         let o = row * layer.bytesPerRow + x * 4
         let a = d[o + 3]
@@ -38,75 +38,133 @@ enum PixelOps {
         return Int((t * t * t * 255).rounded())
     }
 
+    /// A mask and the box it occupies, so callers can work over the part of
+    /// the canvas that is actually involved rather than all of it.
+    struct MaskedRegion {
+        var flags: [Bool]
+        /// In image coordinates; empty when nothing matched.
+        var bounds: CGRect
+    }
+
     /// Builds a boolean mask of pixels matching the seed color.
     /// `contiguous == false` scans the whole layer instead of flooding.
     static func mask(in layer: Layer,
                      seedX: Int, seedY: Int,
                      tolerance: CGFloat,
                      contiguous: Bool) -> [Bool]? {
-        guard let d = layer.data else { return nil }
+        maskedRegion(in: layer, seedX: seedX, seedY: seedY,
+                     tolerance: tolerance, contiguous: contiguous)?.flags
+    }
+
+    static func maskedRegion(in layer: Layer,
+                             seedX: Int, seedY: Int,
+                             tolerance: CGFloat,
+                             contiguous: Bool) -> MaskedRegion? {
+        guard let d = layer.pixels else { return nil }
         let w = layer.width, h = layer.height, stride = layer.bytesPerRow
         guard seedX >= 0, seedY >= 0, seedX < w, seedY < h else { return nil }
 
-        func px(_ x: Int, _ y: Int) -> (Int, Int, Int, Int) {
-            let o = (h - 1 - y) * stride + x * 4
-            return (Int(d[o + 2]), Int(d[o + 1]), Int(d[o + 0]), Int(d[o + 3]))
-        }
-
-        let seed = px(seedX, seedY)
         let limit = channelLimit(for: tolerance)
-
-        func matches(_ x: Int, _ y: Int) -> Bool {
-            let c = px(x, y)
-            let dist = max(max(abs(c.0 - seed.0), abs(c.1 - seed.1)),
-                           max(abs(c.2 - seed.2), abs(c.3 - seed.3)))
-            return dist <= limit
-        }
+        let seedOffset = (h - 1 - seedY) * stride + seedX * 4
+        let seedB = Int(d[seedOffset + 0]), seedG = Int(d[seedOffset + 1])
+        let seedR = Int(d[seedOffset + 2]), seedA = Int(d[seedOffset + 3])
 
         var mask = [Bool](repeating: false, count: w * h)
+        var minX = Int.max, maxX = Int.min, minY = Int.max, maxY = Int.min
 
-        if !contiguous {
-            for y in 0..<h {
-                for x in 0..<w where matches(x, y) { mask[y * w + x] = true }
+        // The scan is the whole canvas in the worst case, so it runs on raw
+        // pointers with the row offset hoisted out of the inner loop.
+        mask.withUnsafeMutableBufferPointer { buffer -> Void in
+            guard let flags = buffer.baseAddress else { return }
+            @inline(__always)
+            func matches(_ x: Int, _ y: Int) -> Bool {
+                let o = (h - 1 - y) * stride + x * 4
+                let distance = max(max(abs(Int(d[o + 2]) - seedR), abs(Int(d[o + 1]) - seedG)),
+                                   max(abs(Int(d[o + 0]) - seedB), abs(Int(d[o + 3]) - seedA)))
+                return distance <= limit
             }
-            return mask
-        }
+            func note(_ x: Int, _ y: Int) {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
 
-        // Scanline flood fill.
-        var stack: [(Int, Int)] = [(seedX, seedY)]
-        while let (sx, sy) = stack.popLast() {
-            var x1 = sx
-            while x1 >= 0 && !mask[sy * w + x1] && matches(x1, sy) { x1 -= 1 }
-            x1 += 1
-            var spanAbove = false, spanBelow = false
-            var x = x1
-            while x < w && !mask[sy * w + x] && matches(x, sy) {
-                mask[sy * w + x] = true
+            if !contiguous {
+                for y in 0..<h {
+                    let row = (h - 1 - y) * stride
+                    let maskRow = y * w
+                    for x in 0..<w {
+                        let o = row + x * 4
+                        let distance = max(max(abs(Int(d[o + 2]) - seedR), abs(Int(d[o + 1]) - seedG)),
+                                           max(abs(Int(d[o + 0]) - seedB), abs(Int(d[o + 3]) - seedA)))
+                        if distance <= limit {
+                            flags[maskRow + x] = true
+                            note(x, y)
+                        }
+                    }
+                }
+                return
+            }
+
+            // Scanline flood fill: fill a run, then push only where the rows
+            // above and below start a new run of their own.
+            var stack: [(Int, Int)] = [(seedX, seedY)]
+            stack.reserveCapacity(1024)
+            while let (sx, sy) = stack.popLast() {
+                let maskRow = sy * w
+                guard !flags[maskRow + sx], matches(sx, sy) else { continue }
+                var start = sx
+                while start > 0, !flags[maskRow + start - 1], matches(start - 1, sy) { start -= 1 }
+                var end = sx
+                while end < w - 1, !flags[maskRow + end + 1], matches(end + 1, sy) { end += 1 }
+
+                for x in start...end { flags[maskRow + x] = true }
+                note(start, sy)
+                note(end, sy)
+
                 if sy > 0 {
-                    let above = !mask[(sy - 1) * w + x] && matches(x, sy - 1)
-                    if above && !spanAbove { stack.append((x, sy - 1)); spanAbove = true }
-                    else if !above { spanAbove = false }
+                    var spanning = false
+                    let above = maskRow - w
+                    for x in start...end {
+                        let open = !flags[above + x] && matches(x, sy - 1)
+                        if open && !spanning { stack.append((x, sy - 1)) }
+                        spanning = open
+                    }
                 }
                 if sy < h - 1 {
-                    let below = !mask[(sy + 1) * w + x] && matches(x, sy + 1)
-                    if below && !spanBelow { stack.append((x, sy + 1)); spanBelow = true }
-                    else if !below { spanBelow = false }
+                    var spanning = false
+                    let below = maskRow + w
+                    for x in start...end {
+                        let open = !flags[below + x] && matches(x, sy + 1)
+                        if open && !spanning { stack.append((x, sy + 1)) }
+                        spanning = open
+                    }
                 }
-                x += 1
             }
         }
-        return mask
+
+        guard minX <= maxX, minY <= maxY else { return MaskedRegion(flags: mask, bounds: .zero) }
+        return MaskedRegion(flags: mask,
+                            bounds: CGRect(x: minX, y: minY,
+                                           width: maxX - minX + 1, height: maxY - minY + 1))
     }
 
-    /// Traces the outline of a mask as closed loops, in Core Graphics
-    /// coordinates. One rectangle per row would clip correctly but stroke every
-    /// internal row edge, which turns marching ants into a hatch pattern, so the
-    /// boundary is walked instead: outer loops and holes both come out closed,
-    /// and an even-odd fill treats them correctly.
-    static func path(from mask: [Bool], width w: Int, height h: Int) -> CGPath {
+    /// Traces the outline of a mask. `bounds` limits the walk to the part of
+    /// the canvas the mask actually covers — on a large document that is the
+    /// difference between reading a few thousand cells and a few hundred
+    /// million.
+    static func path(from mask: [Bool], width w: Int, height h: Int,
+                     bounds: CGRect? = nil) -> CGPath {
         func inMask(_ x: Int, _ y: Int) -> Bool {
             x >= 0 && y >= 0 && x < w && y < h && mask[y * w + x]
         }
+        let box = bounds.map { $0.integral.intersection(CGRect(x: 0, y: 0, width: w, height: h)) }
+        let firstX = box.map { max(0, Int($0.minX)) } ?? 0
+        let lastX = box.map { min(w - 1, Int($0.maxX) - 1) } ?? w - 1
+        let firstY = box.map { max(0, Int($0.minY)) } ?? 0
+        let lastY = box.map { min(h - 1, Int($0.maxY) - 1) } ?? h - 1
+        guard firstX <= lastX, firstY <= lastY else { return CGMutablePath().copy()! }
 
         // Boundary edges, wound so that each one leads into the next.
         var next: [Int: [Int]] = [:]
@@ -115,8 +173,8 @@ enum PixelOps {
             next[corner(from.0, from.1), default: []].append(corner(to.0, to.1))
         }
 
-        for y in 0..<h {
-            for x in 0..<w where mask[y * w + x] {
+        for y in firstY...lastY {
+            for x in firstX...lastX where mask[y * w + x] {
                 if !inMask(x, y - 1) { addEdge((x, y), (x + 1, y)) }
                 if !inMask(x + 1, y) { addEdge((x + 1, y), (x + 1, y + 1)) }
                 if !inMask(x, y + 1) { addEdge((x + 1, y + 1), (x, y + 1)) }
@@ -174,10 +232,22 @@ enum PixelOps {
                           clip: CGPath?,
                           blend: CGBlendMode = .normal,
                           alpha: CGFloat = 1.0) {
-        guard let mask = mask(in: layer, seedX: seedX, seedY: seedY,
-                              tolerance: tolerance, contiguous: contiguous) else { return }
-        let region = path(from: mask, width: layer.width, height: layer.height)
-        let ctx = layer.context
+        guard let masked = maskedRegion(in: layer, seedX: seedX, seedY: seedY,
+                                        tolerance: tolerance, contiguous: contiguous),
+              !masked.bounds.isEmpty else { return }
+
+        // The common case — an opaque fill, no selection, normal blending —
+        // needs no outline at all: the mask says which pixels to write. Tracing
+        // a path around a large fill costs far more than the fill itself.
+        if clip == nil, blend == .normal, alpha >= 1 {
+            fill(layer: layer, mask: masked, color: color)
+            return
+        }
+
+        let region = path(from: masked.flags, width: layer.width, height: layer.height,
+                          bounds: masked.bounds)
+        layer.markEdited(masked.bounds)
+        let ctx = layer.rawContext
         ctx.saveGState()
         if let clip { ctx.addPath(clip); ctx.clip(using: .evenOdd) }
         ctx.addPath(region)
@@ -189,13 +259,39 @@ enum PixelOps {
         ctx.restoreGState()
     }
 
-    /// Replaces pixels close to `from` with `to` inside the brush dab — the Recolor tool.
+    /// Writes a solid colour straight into the masked pixels.
+    private static func fill(layer: Layer, mask masked: MaskedRegion, color: NSColor) {
+        guard let d = layer.editPixels(masked.bounds) else { return }
+        let w = layer.width, h = layer.height, stride = layer.bytesPerRow
+        let c = color.srgb
+        let a = UInt8((c.alphaComponent * 255).rounded())
+        let scale = CGFloat(a) / 255
+        let r = UInt8((c.redComponent * 255 * scale).rounded())
+        let g = UInt8((c.greenComponent * 255 * scale).rounded())
+        let b = UInt8((c.blueComponent * 255 * scale).rounded())
+
+        let x0 = max(0, Int(masked.bounds.minX)), x1 = min(w - 1, Int(masked.bounds.maxX) - 1)
+        let y0 = max(0, Int(masked.bounds.minY)), y1 = min(h - 1, Int(masked.bounds.maxY) - 1)
+        guard x0 <= x1, y0 <= y1 else { return }
+
+        masked.flags.withUnsafeBufferPointer { flags in
+            for y in y0...y1 {
+                let row = (h - 1 - y) * stride
+                let maskRow = y * w
+                for x in x0...x1 where flags[maskRow + x] {
+                    let o = row + x * 4
+                    d[o + 0] = b; d[o + 1] = g; d[o + 2] = r; d[o + 3] = a
+                }
+            }
+        }
+    }
+
     static func recolor(layer: Layer,
                         in rect: CGRect,
                         from source: NSColor,
                         to target: NSColor,
                         tolerance: CGFloat) {
-        guard let d = layer.data else { return }
+        guard let d = layer.editPixels(rect) else { return }
         let w = layer.width, h = layer.height, stride = layer.bytesPerRow
         let s = source.srgb
         let t = target.srgb
@@ -247,7 +343,7 @@ extension PixelOps {
     /// pixels for anything that hangs over the side so a dab still works in a
     /// corner. Returns nil only when the rectangle misses the layer entirely.
     static func readPatch(_ layer: Layer, rect: CGRect) -> Patch? {
-        guard let d = layer.data else { return nil }
+        guard let d = layer.pixels else { return nil }
         let x0 = Int(rect.minX), y0 = Int(rect.minY)
         let w = Int(rect.width), h = Int(rect.height)
         guard w > 0, h > 0,
@@ -314,7 +410,7 @@ extension PixelOps {
 
         guard let dest = readPatch(layer, rect: destRect),
               let source = readPatch(layer, rect: sourceRect),
-              let d = layer.data else { return false }
+              let d = layer.editPixels(destRect) else { return false }
 
         // Mean of the ring just outside the dab, in both patches.
         var destRing = [Float](repeating: 0, count: 4)
@@ -448,8 +544,9 @@ extension PixelOps {
         let side = outer * 2 + 1
         let originX = Int(center.x.rounded()) - outer
         let originY = Int(center.y.rounded()) - outer
-        guard let dest = readPatch(layer, rect: CGRect(x: originX, y: originY, width: side, height: side)),
-              let d = layer.data else { return false }
+        let region = CGRect(x: originX, y: originY, width: side, height: side)
+        guard let dest = readPatch(layer, rect: region),
+              let d = layer.editPixels(region) else { return false }
 
         let stride = layer.bytesPerRow
         let core = max(0.01, hardness.clamped(to: 0...1))

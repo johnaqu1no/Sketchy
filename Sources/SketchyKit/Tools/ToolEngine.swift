@@ -539,7 +539,9 @@ final class ToolEngine {
     func commitSession() -> Bool {
         guard let s = session, let layer = doc.selectedLayer else { return false }
         let path = sessionPath(s)
-        let ctx = layer.context
+        let reach = settings.brushWidth + 4
+        layer.markEdited(path.boundingBoxOfPath.insetBy(dx: -reach, dy: -reach))
+        let ctx = layer.rawContext
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setShouldAntialias(settings.antialiasing)
@@ -666,8 +668,11 @@ final class ToolEngine {
 
     // MARK: - Painting
 
-    private func brushContext(_ layer: Layer) -> CGContext {
-        let ctx = layer.context
+    /// A context set up for a dab or stroke. `region` is what is about to
+    /// change, which is what keeps an undo step small.
+    private func brushContext(_ layer: Layer, region: CGRect? = nil) -> CGContext {
+        layer.markEdited(region)
+        let ctx = layer.rawContext
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setLineCap(.round)
@@ -767,7 +772,8 @@ final class ToolEngine {
     private func commitStroke() {
         guard let scratch = strokeScratch, let layer = doc.selectedLayer,
               let image = scratch.image else { strokeScratch = nil; return }
-        let ctx = layer.context
+        layer.markEdited(strokeScratchRect)
+        let ctx = layer.rawContext
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setBlendMode(settings.blendMode.cgBlendMode)
@@ -787,8 +793,10 @@ final class ToolEngine {
             stampStroke(from: a, to: b, into: scratch)
             return
         }
-        let ctx = brushContext(layer)
         let width = settings.tool == .pencil ? 1 : settings.brushWidth
+        let touched = CGRect(x: min(a.x, b.x) - width, y: min(a.y, b.y) - width,
+                             width: abs(b.x - a.x) + width * 2, height: abs(b.y - a.y) + width * 2)
+        let ctx = brushContext(layer, region: touched)
         ctx.setLineWidth(width)
         if settings.tool == .eraser {
             ctx.setBlendMode(.clear)
@@ -815,8 +823,9 @@ final class ToolEngine {
 
     private func cloneDab(at p: CGPoint) {
         guard let layer = doc.selectedLayer, let delta = cloneDelta, let src = layer.image else { return }
-        let ctx = brushContext(layer)
         let d = settings.brushWidth
+        let ctx = brushContext(layer, region: CGRect(x: p.x - d / 2 - 1, y: p.y - d / 2 - 1,
+                                                     width: d + 2, height: d + 2))
         ctx.addEllipse(in: CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d))
         ctx.clip()
         ctx.draw(src, in: CGRect(x: -delta.width, y: -delta.height,
@@ -1024,7 +1033,8 @@ final class ToolEngine {
     /// did while it was being typed.
     func commitText(_ string: NSAttributedString, in box: CGRect) {
         guard let layer = doc.selectedRasterLayer, string.length > 0, !box.isEmpty else { return }
-        let ctx = layer.context
+        layer.markEdited(box.insetBy(dx: -2, dy: -2))
+        let ctx = layer.rawContext
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setBlendMode(settings.blendMode.cgBlendMode)
@@ -1111,10 +1121,11 @@ final class ToolEngine {
 
     private func magicWand(at p: CGPoint, modifiers: NSEvent.ModifierFlags) {
         guard let layer = doc.selectedLayer,
-              let mask = PixelOps.mask(in: layer, seedX: Int(p.x), seedY: Int(p.y),
-                                       tolerance: settings.tolerance,
-                                       contiguous: !settings.fillGlobally) else { return }
-        applySelection(PixelOps.path(from: mask, width: layer.width, height: layer.height))
+              let masked = PixelOps.maskedRegion(in: layer, seedX: Int(p.x), seedY: Int(p.y),
+                                                 tolerance: settings.tolerance,
+                                                 contiguous: !settings.fillGlobally) else { return }
+        applySelection(PixelOps.path(from: masked.flags, width: layer.width, height: layer.height,
+                                     bounds: masked.bounds))
     }
 
     // MARK: - Floating pixels
@@ -1327,8 +1338,8 @@ final class ToolEngine {
         // pixels get the straight copy.
         layer.context.interpolationQuality = floatingIsUnscaled && floatingAngle == 0
             ? .none : settings.resampling.quality
-        drawFloating(img, in: layer.context)
-        layer.context.restoreGState()
+        drawFloating(img, in: layer.rawContext)
+        layer.rawContext.restoreGState()
         doc.selectionPath = floatingOutline()
         floatingImage = nil
         floatingUndoSnapshot = nil

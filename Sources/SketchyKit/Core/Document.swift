@@ -43,7 +43,12 @@ final class Document {
         let base = Layer(width: self.width, height: self.height, name: "Background")
         if let background { base.fill(with: background) }
         layers = [base]
+        history.onTrim = { [weak self] dropped in
+            guard let self else { return }
+            appliedStep = max(0, appliedStep - dropped)
+        }
         history.reset(with: snapshot(title: "Background"))
+        markRecorded()
     }
 
     convenience init(image: CGImage, url: URL?) {
@@ -51,48 +56,160 @@ final class Document {
         layers[0].draw(image: image)
         fileURL = url
         history.reset(with: snapshot(title: "Open"))
+        markRecorded()
     }
 
     // MARK: - Snapshots / undo
 
+    /// What each layer's pixels looked like when it was last recorded, so a
+    /// step can say "unchanged" instead of copying the canvas again.
+    private var recordedVersions: [LayerID: Int] = [:]
+
     func snapshot(title: String) -> HistorySnapshot {
-        HistorySnapshot(
-            title: title,
-            layers: layers.map {
-                .init(name: $0.name, visible: $0.isVisible, opacity: $0.opacity,
-                      blend: $0.blendMode, image: $0.image,
-                      kind: $0.kind, depth: $0.depth, collapsed: $0.isCollapsed)
-            },
-            selectedIndex: selectedLayerIndex,
-            width: width, height: height)
+        let previous = history.entries.indices.contains(history.cursor) ? history.cursor : nil
+        let states = layers.map { layer -> HistorySnapshot.LayerState in
+            .init(id: layer.id, name: layer.name, visible: layer.isVisible,
+                  opacity: layer.opacity, blend: layer.blendMode,
+                  pixels: pixelSource(for: layer, previousStep: previous),
+                  kind: layer.kind, depth: layer.depth, collapsed: layer.isCollapsed)
+        }
+        for layer in layers { recordedVersions[layer.id] = layer.contentVersion }
+        return HistorySnapshot(title: title, layers: states,
+                               selectedIndex: selectedLayerIndex, width: width, height: height)
+    }
+
+    /// The layers now match the newest step: the next edit is measured from
+    /// here, so an untouched layer can be recorded as unchanged.
+    private func markRecorded() {
+        for layer in layers { layer.clearDirtyRegion() }
+    }
+
+    /// Decides how little of a layer this step has to keep.
+    private func pixelSource(for layer: Layer, previousStep: Int?) -> PixelSource {
+        // A layer nothing has ever drawn into has no pixels to keep — and
+        // asking it for an image would allocate the bitmap it has done without.
+        guard layer.hasPixels else { return PixelSource(.whole(nil)) }
+        // Nothing to inherit from: the step has to carry the pixels itself.
+        guard let previousStep,
+              history.entries[previousStep].layers.contains(where: { $0.id == layer.id }),
+              history.entries[previousStep].width == width,
+              history.entries[previousStep].height == height else {
+            return PixelSource(.whole(layer.image))
+        }
+        if recordedVersions[layer.id] == layer.contentVersion {
+            return PixelSource(.unchanged)
+        }
+        // Every so often the chain restarts with a full copy, so undo never
+        // has to replay a long run of patches.
+        guard history.patchDepth(forLayer: layer.id) < 12 else {
+            return PixelSource(.whole(layer.image))
+        }
+        // A small edit keeps only its own rectangle. Past about a third of the
+        // canvas the bookkeeping stops paying for itself.
+        if let rect = layer.dirtyRegion, !rect.isEmpty,
+           rect.width * rect.height * 3 < CGFloat(width * height),
+           let full = layer.image,
+           let patch = full.cropping(to: flipped(rect)) {
+            return PixelSource(.patch(patch, rect))
+        }
+        return PixelSource(.whole(layer.image))
+    }
+
+    /// Image space has its origin at the top left; the canvas works bottom-up.
+    private func flipped(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX, y: CGFloat(height) - rect.maxY, width: rect.width, height: rect.height)
     }
 
     func commit(_ title: String) {
-        // Anything cached from the pixels — the palette thumbnails — is stale
-        // as of this edit.
-        for layer in layers { layer.revision += 1 }
         history.push(snapshot(title: title))
+        appliedStep = history.cursor
+        markRecorded()
         isDirty = true
         onChange?()
     }
 
+    /// Which history step the layers currently hold, so stepping to another
+    /// one can repaint just the difference.
+    private var appliedStep: Int = 0
+
     func apply(_ snap: HistorySnapshot) {
+        if applyByPatching(snap) { return }
+
         width = snap.width
         height = snap.height
+        // Reuse the layer objects where the stack lines up: allocating a fresh
+        // bitmap per layer per undo is the most expensive thing this could do.
+        let existing = Dictionary(layers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         layers = snap.layers.map { st in
-            let l = Layer(width: snap.width, height: snap.height, name: st.name,
-                          kind: st.kind, depth: st.depth)
-            l.isVisible = st.visible
-            l.opacity = st.opacity
-            l.blendMode = st.blend
-            l.isCollapsed = st.collapsed
-            if let img = st.image { l.draw(image: img) }
+            let reused = existing[st.id]
+            let l: Layer
+            if let reused, reused.width == snap.width, reused.height == snap.height {
+                l = reused
+                l.clear()
+            } else {
+                l = Layer(width: snap.width, height: snap.height, name: st.name,
+                          kind: st.kind, depth: st.depth, id: st.id)
+            }
+            apply(st, to: l)
+            if let img = history.image(forLayer: st.id, at: history.cursor) { l.draw(image: img) }
+            l.clearDirtyRegion()
+            recordedVersions[st.id] = l.contentVersion
             return l
         }
         selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
+        appliedStep = history.cursor
         isDirty = true
         onStructureChange?()
         onChange?()
+    }
+
+    private func apply(_ state: HistorySnapshot.LayerState, to layer: Layer) {
+        layer.name = state.name
+        layer.kind = state.kind
+        layer.depth = state.depth
+        layer.isVisible = state.visible
+        layer.opacity = state.opacity
+        layer.blendMode = state.blend
+        layer.isCollapsed = state.collapsed
+    }
+
+    /// Steps to a neighbouring state by repainting only the rectangles that
+    /// differ. Returns false when the two states are too far apart for that —
+    /// a different stack, a different canvas size, a whole-layer copy — and
+    /// the caller rebuilds instead.
+    private func applyByPatching(_ snap: HistorySnapshot) -> Bool {
+        let target = history.cursor
+        guard target != appliedStep,
+              history.entries.indices.contains(appliedStep),
+              snap.width == width, snap.height == height,
+              snap.layers.count == layers.count else { return false }
+
+        var regions: [CGRect] = []
+        for (state, layer) in zip(snap.layers, layers) {
+            guard state.id == layer.id,
+                  let region = history.changedRegion(forLayer: state.id, from: appliedStep, to: target)
+            else { return false }
+            regions.append(region)
+        }
+
+        for (index, layer) in layers.enumerated() {
+            apply(snap.layers[index], to: layer)
+            let region = regions[index].integral.intersection(bounds)
+            guard !region.isEmpty else { continue }
+            guard let patch = history.image(forLayer: layer.id, at: target, in: region) else { return false }
+            layer.edit(region) { ctx in
+                ctx.clear(region)
+                ctx.draw(patch, in: region)
+            }
+            layer.clearDirtyRegion()
+            recordedVersions[layer.id] = layer.contentVersion
+        }
+        selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
+        appliedStep = target
+        isDirty = true
+        onStructureChange?()
+        onChange?()
+        return true
     }
 
     @discardableResult func undo() -> Bool {
@@ -390,7 +507,10 @@ final class Document {
                 drawStack(childRange(ofGroupAt: i), depth: depth + 1, into: buffer)
                 img = buffer.makeImage()
             } else {
-                img = layer.image
+                // Zoomed out, a pre-shrunk copy costs far less to sample than
+                // the full-size layer.
+                let scale = ctx.ctm.a
+                img = layer.image(forScale: abs(scale))
             }
             guard let img else { continue }
             ctx.saveGState()
@@ -771,6 +891,7 @@ final class Document {
         doc.fileURL = url
         doc.isDirty = false
         doc.history.reset(with: doc.snapshot(title: "Open"))
+        doc.markRecorded()
         return doc
     }
 

@@ -2030,12 +2030,12 @@ windowSection("layer thumbnails are cached and downsampled") {
     // One slot: asking for another size drops what was cached.
     check(layer.thumbnail(size: NSSize(width: 48, height: 48)) !== first, "a different size is its own")
 
-    // Committing an edit is what makes a thumbnail stale.
+    // Drawing into the layer is what makes a thumbnail stale.
     let base = layer.thumbnail(size: size)
     layer.fill(with: .red)
-    check(layer.thumbnail(size: size) === base, "an uncommitted change keeps the old one")
-    doc.commit("Fill")
-    check(layer.thumbnail(size: size) !== base, "the commit invalidates it")
+    check(layer.thumbnail(size: size) !== base, "painting invalidates it")
+    let painted = layer.thumbnail(size: size)
+    check(layer.thumbnail(size: size) === painted, "and the new one is kept until the next edit")
 
     // The two-step downsample has to land on the same picture, not a blank.
     guard let full = layer.image, let small = Layer.downsampled(full, fitting: size) else {
@@ -2051,6 +2051,136 @@ windowSection("layer thumbnails are cached and downsampled") {
     check(Layer.downsampled(probe.image!, fitting: NSSize(width: 64, height: 64)) === probe.image! ||
           Layer.downsampled(probe.image!, fitting: NSSize(width: 64, height: 64)).map { $0.width == 34 } == true,
           "an image already smaller than the target is left alone")
+}
+
+section("undo keeps only what changed")
+do {
+    let doc = Document(width: 200, height: 200, background: .white)
+    let settings = ToolSettings()
+    settings.tool = .pencil
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .red
+
+    func stroke(from a: CGPoint, to b: CGPoint) {
+        engine.mouseDown(at: a, rightButton: false, modifiers: [])
+        engine.mouseDragged(to: b, modifiers: [])
+        engine.mouseUp(at: b, modifiers: [])
+    }
+
+    stroke(from: CGPoint(x: 20, y: 20), to: CGPoint(x: 60, y: 20))
+    stroke(from: CGPoint(x: 120, y: 120), to: CGPoint(x: 160, y: 120))
+
+    // The steps carry a patch, not a copy of the canvas.
+    let last = doc.history.entries.last
+    if case .patch(_, let rect)? = last?.layers.first?.pixels.content {
+        check(rect.width < 100 && rect.height < 100, "a small stroke keeps a small rectangle")
+    } else {
+        check(false, "a stroke should be stored as a patch")
+    }
+    // One base copy plus two small patches, not three canvases.
+    check(doc.history.estimatedBytes < 200 * 200 * 4 * 2, "two strokes add far less than a canvas each")
+
+    func isRed(_ x: Int, _ y: Int) -> Bool {
+        guard let p = pixel(doc, x, y) else { return false }
+        return p.r > 200 && p.g < 80
+    }
+    check(isRed(40, 20) && isRed(140, 120), "both strokes are there")
+
+    doc.undo()
+    check(isRed(40, 20), "undo leaves the first stroke")
+    check(!isRed(140, 120), "and takes back the second")
+    doc.undo()
+    check(!isRed(40, 20), "a second undo takes back the first")
+    check((pixel(doc, 40, 20)?.r ?? 0) > 200 && (pixel(doc, 40, 20)?.g ?? 0) > 200,
+          "restoring the white it was painted over")
+
+    doc.redo(); doc.redo()
+    check(isRed(40, 20) && isRed(140, 120), "redo puts both back")
+
+    // Jumping straight to an old step has to work as well as stepping.
+    doc.jumpHistory(to: 0)
+    check(!isRed(40, 20) && !isRed(140, 120), "jumping to the start clears both")
+    doc.jumpHistory(to: doc.history.entries.count - 1)
+    check(isRed(40, 20) && isRed(140, 120), "and jumping forward restores them")
+}
+
+section("a long run of edits still undoes")
+do {
+    // More strokes than the patch chain is allowed to grow, so the document
+    // has to plant whole copies along the way.
+    let doc = Document(width: 120, height: 120, background: .white)
+    let settings = ToolSettings()
+    settings.tool = .pencil
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .blue
+    for i in 0..<20 {
+        let y = CGFloat(5 + i * 5)
+        engine.mouseDown(at: CGPoint(x: 10, y: y), rightButton: false, modifiers: [])
+        engine.mouseDragged(to: CGPoint(x: 100, y: y), modifiers: [])
+        engine.mouseUp(at: CGPoint(x: 100, y: y), modifiers: [])
+    }
+    func isBlue(_ i: Int) -> Bool {
+        guard let p = pixel(doc, 50, 5 + i * 5) else { return false }
+        // White has a full blue channel too, so the red one settles it.
+        return p.b > 200 && p.r < 80
+    }
+    check((0..<20).allSatisfy(isBlue), "all twenty strokes landed")
+    for _ in 0..<20 { doc.undo() }
+    check((0..<20).allSatisfy { !isBlue($0) }, "and all twenty come back off")
+    for _ in 0..<20 { doc.redo() }
+    check((0..<20).allSatisfy(isBlue), "and go back on")
+}
+
+section("undo across changes the patches cannot describe")
+do {
+    let doc = Document(width: 100, height: 100, background: .white)
+    doc.selectedLayer?.fill(with: .red)
+    doc.commit("Fill")
+    doc.addLayer(named: "Second")
+    doc.selectedLayer?.fill(with: .green)
+    doc.commit("Fill green")
+    doc.crop(to: CGRect(x: 10, y: 10, width: 50, height: 50))
+    equal(doc.width, 50, "the crop took")
+
+    doc.undo()
+    equal(doc.width, 100, "undo restores the canvas size")
+    equal(doc.layers.count, 2, "with both layers")
+    check((pixel(doc, 80, 80)?.g ?? 0) > 200, "and the pixels the crop discarded")
+
+    doc.undo()
+    equal(doc.layers.count, 2, "the step before that is where the layer was added")
+    doc.undo()
+    equal(doc.layers.count, 1, "another undo drops the added layer")
+    check((pixel(doc, 50, 50)?.r ?? 0) > 200, "leaving the red fill")
+}
+
+section("the zoomed-out copy follows edits")
+do {
+    let doc = Document(width: 400, height: 400, background: .white)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+
+    // Draw at a size that survives an eightfold shrink.
+    layer.context.setFillColor(NSColor.red.cgColor)
+    layer.context.fill(CGRect(x: 0, y: 0, width: 400, height: 200))
+    func shrunkPixel(_ x: Int, _ y: Int) -> PixelOps.RGBA? {
+        guard let img = doc.composite(region: doc.bounds, pixelSize: CGSize(width: 50, height: 50))
+        else { return nil }
+        let probe = Layer(width: img.width, height: img.height, name: "probe")
+        probe.draw(image: img)
+        return PixelOps.sample(probe, x: x, y: y)
+    }
+    check((shrunkPixel(25, 10)?.r ?? 0) > 200, "the shrunk copy shows what was drawn")
+    check((shrunkPixel(25, 10)?.g ?? 255) < 80, "in the right colour")
+    check((shrunkPixel(25, 40)?.g ?? 0) > 200, "and the untouched half stays white")
+
+    // Painting again must show up at the small size too, not a stale copy.
+    layer.edit(CGRect(x: 0, y: 200, width: 400, height: 200)) { ctx in
+        ctx.setFillColor(NSColor.blue.cgColor)
+        ctx.fill(CGRect(x: 0, y: 200, width: 400, height: 200))
+    }
+    check((shrunkPixel(25, 40)?.b ?? 0) > 200, "a later edit reaches the shrunk copy")
+    doc.commit("Paint")
+    check((shrunkPixel(25, 10)?.r ?? 0) > 200, "and the older half is still there")
 }
 
 section("the checkerboard only draws what shows")
