@@ -178,7 +178,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         // Anything still floating is put down before the tool changes under it.
         if tool != settings.tool {
             engine.commitSession()
-            if tool != .moveSelectedPixels { engine.commitFloatingPixels() }
+            if tool != .moveSelectedPixels, engine.commitFloatingPixels() {
+                refreshPanels()
+            }
         }
         settings.tool = tool
         toolsPanel.select(tool)
@@ -283,6 +285,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         optionsBar.rebuild()
         statusBar.flash(message, thenHintFor: settings.tool)
         canvas.needsDisplay = true
+    }
+
+    func canvasDidCommitEdit(_ view: CanvasView) {
+        refreshPanels()
     }
 
     func canvasDidChangeMeasurement(_ view: CanvasView) {

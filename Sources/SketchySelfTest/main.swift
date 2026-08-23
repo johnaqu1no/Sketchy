@@ -807,7 +807,11 @@ do {
 
     check(engine.hasFloatingPixels, "the paste is floating, not drawn")
     equal(doc.history.entries.count, 1, "nothing is committed yet")
-    equal(pixel(doc, 10, 10)?.r ?? 0, 255, "the layer is untouched while floating")
+    // The layer itself is untouched until the pixels are dropped, but the
+    // canvas shows them where they will land.
+    equal(PixelOps.sample(doc.selectedLayer!, x: 10, y: 10)?.r ?? 0, 255,
+          "the layer is untouched while floating")
+    check((pixel(doc, 10, 10)?.b ?? 0) > 200, "while the canvas shows the floating paste")
 
     // Drag it far off the canvas, then back: the pixels are still all there.
     engine.mouseDown(at: CGPoint(x: 5, y: 5), rightButton: false, modifiers: [])
@@ -1994,6 +1998,69 @@ windowSection("clicking a layer row selects that layer") {
     doc.addLayer(named: "Fourth")
     panel.selectRow(3)
     equal(doc.selectedLayerIndex, 0, "a row still means what it shows after the stack changes")
+}
+
+section("a floating paste sits in its layer's place")
+do {
+    // Bottom layer gets the paste; the layer above it is opaque white, so a
+    // paste drawn on top of everything would show through where it must not.
+    let doc = Document(width: 20, height: 20, background: nil)
+    doc.selectedLayer?.fill(with: .white)
+    doc.addLayer(named: "Cover")
+    doc.selectedLayer?.context.setFillColor(NSColor.green.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 0, width: 20, height: 10))
+    doc.commit("Cover")
+    doc.selectedLayerIndex = 0
+
+    let settings = ToolSettings()
+    settings.tool = .moveSelectedPixels
+    let engine = ToolEngine(doc: doc, settings: settings)
+    let clip = Layer(width: 20, height: 20, name: "clip")
+    clip.fill(with: .red)
+    engine.beginFloatingPaste(clip.image!, at: .zero)
+
+    // Where the upper layer covers, it wins; elsewhere the paste shows.
+    check((pixel(doc, 10, 5)?.g ?? 0) > 200, "the layer above still covers the paste")
+    check((pixel(doc, 10, 5)?.r ?? 255) < 80, "so none of it shows through")
+    check((pixel(doc, 10, 15)?.r ?? 0) > 200, "and the paste shows where nothing covers it")
+
+    // Dropping it changes nothing about what is on screen.
+    check(engine.commitFloatingPixels(), "the paste drops")
+    check((pixel(doc, 10, 5)?.g ?? 0) > 200, "the cover still covers")
+    check((pixel(doc, 10, 15)?.r ?? 0) > 200, "and the paste is where it looked")
+}
+
+windowSection("a paste shows up in the palette") {
+    let doc = Document(width: 40, height: 40, background: .white)
+    doc.addLayer(named: "Second")
+    doc.selectedLayerIndex = 0
+
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: doc, hub: hub)
+    let panel = hub.layersPanel
+    let thumbSize = NSSize(width: 34, height: 34)
+    let before = doc.layers[0].thumbnail(size: thumbSize)
+
+    let clip = Layer(width: 10, height: 10, name: "clip")
+    clip.fill(with: .red)
+    controller.engine.beginFloatingPaste(clip.image!, at: CGPoint(x: 5, y: 5))
+    check(controller.engine.hasFloatingPixels, "the paste is floating")
+
+    check(controller.engine.commitFloatingPixels(), "and drops into the layer")
+    controller.refreshPanels()
+    check(doc.layers[0].thumbnail(size: thumbSize) !== before, "the palette thumbnail is redrawn")
+    equal(panel.visibleRows, [1, 0], "with the stack still in order, top first")
+
+    // Pasting into a new layer puts it above the one that was selected, and
+    // the palette shows it there straight away.
+    controller.pasteIntoNewLayer(nil)
+    controller.commitPendingEdits()
+    equal(doc.layers.count, 3, "the new layer is in the stack")
+    equal(panel.visibleRows.count, 3, "and the palette lists all three")
+    equal(panel.visibleRows.first, 2, "top-most row is the top-most layer")
+    equal(doc.layers[doc.selectedLayerIndex].name, "Pasted Layer", "with the pasted layer selected")
+    check((pixel(doc, 7, 7)?.r ?? 0) > 200, "and the pasted pixels on the canvas")
+    controller.window?.close()
 }
 
 windowSection("cut and paste follow the selected layer") {

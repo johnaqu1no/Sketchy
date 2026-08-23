@@ -1181,6 +1181,7 @@ final class ToolEngine {
         floatingUndoSnapshot = full
         floatingStartSelection = doc.selectionPath
         floatingTitle = "Move Selected Pixels"
+        installFloatingOverlay()
 
         // Erase the lifted pixels from the source layer.
         layer.context.saveGState()
@@ -1208,9 +1209,27 @@ final class ToolEngine {
         floatingUndoSnapshot = nil
         floatingStartSelection = doc.selectionPath
         floatingTitle = "Paste"
+        installFloatingOverlay()
         doc.selectionPath = CGPath(rect: floatingRect, transform: nil)
         doc.onChange?()
         onNeedsDisplay?()
+    }
+
+    /// Keeps the floating pixels drawn in their layer's place in the stack,
+    /// so anything above them covers them the way it will once they land.
+    private func installFloatingOverlay() {
+        doc.layerOverlay = { [weak self] layer, ctx in
+            guard let self, let img = floatingImage, layer === doc.selectedRasterLayer else { return }
+            ctx.saveGState()
+            ctx.interpolationQuality = floatingIsUnscaled && floatingAngle == 0
+                ? .none : settings.resampling.quality
+            drawFloating(img, in: ctx)
+            ctx.restoreGState()
+        }
+    }
+
+    private func removeFloatingOverlay() {
+        doc.layerOverlay = nil
     }
 
     /// Where the floating pixels currently sit, in image coordinates.
@@ -1362,6 +1381,7 @@ final class ToolEngine {
             ? .none : settings.resampling.quality
         drawFloating(img, in: layer.rawContext)
         layer.rawContext.restoreGState()
+        removeFloatingOverlay()
         doc.selectionPath = floatingOutline()
         floatingImage = nil
         floatingUndoSnapshot = nil
@@ -1449,6 +1469,7 @@ final class ToolEngine {
         floatingImage = nil
         floatingUndoSnapshot = nil
         floatingFrame = .zero
+        removeFloatingOverlay()
         doc.onChange?()
         onNeedsDisplay?()
     }
@@ -1511,12 +1532,9 @@ final class ToolEngine {
         if settings.tool == .moveSelection && floatingImage == nil {
             drawSelectionHandles(in: ctx, scale: scale)
         }
-        if let img = floatingImage {
-            ctx.saveGState()
-            ctx.interpolationQuality = floatingIsUnscaled && floatingAngle == 0
-                ? .none : settings.resampling.quality
-            drawFloating(img, in: ctx)
-            ctx.restoreGState()
+        if floatingImage != nil {
+            // The pixels themselves are composited in their layer's place;
+            // only the chrome belongs on top.
             drawHandles(floatingHandles(), in: ctx, scale: scale)
             drawRotationKnob(in: ctx, scale: scale)
         }

@@ -6,6 +6,9 @@ protocol CanvasViewDelegate: AnyObject {
     /// `box` is where the text should go, in image coordinates. A box with no
     /// width is a plain click: the caller picks a default size.
     func canvasWantsTextEntry(_ view: CanvasView, in box: CGRect)
+    /// The canvas finished an edit on its own — dropping floating pixels, say
+    /// — and the palettes need to catch up.
+    func canvasDidCommitEdit(_ view: CanvasView)
     func canvasWantsDelete(_ view: CanvasView)
     func canvasDidChangeMeasurement(_ view: CanvasView)
     func canvas(_ view: CanvasView, didAdjustSetting message: String)
@@ -460,11 +463,26 @@ final class CanvasView: NSView {
         let arrows: [UInt16: (CGFloat, CGFloat)] = [123: (-1, 0), 124: (1, 0), 125: (0, -1), 126: (0, 1)]
         switch event.keyCode {
         case 36, 76:  // Return / Enter
-            if engine.session != nil { engine.commitSession() } else { super.keyDown(with: event) }
+            if engine.session != nil {
+                engine.commitSession()
+            } else if engine.hasFloatingPixels {
+                // The status bar promises ⏎ drops them; it has to.
+                engine.commitFloatingPixels()
+                delegate?.canvasDidCommitEdit(self)
+            } else {
+                super.keyDown(with: event)
+            }
         case 51, 117: // Delete / Forward Delete
             delegate?.canvasWantsDelete(self)
         case 53:      // Escape
-            if engine.session != nil { engine.cancelSession() } else { document.deselect() }
+            if engine.session != nil {
+                engine.cancelSession()
+            } else if engine.hasFloatingPixels {
+                engine.cancelFloatingPixels()
+                delegate?.canvasDidCommitEdit(self)
+            } else {
+                document.deselect()
+            }
         case let code where arrows[code] != nil && engine.hasFloatingPixels:
             let (dx, dy) = arrows[event.keyCode]!
             let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1

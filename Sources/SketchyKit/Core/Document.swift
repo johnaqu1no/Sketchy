@@ -17,6 +17,10 @@ final class Document {
 
     var onChange: (() -> Void)?
     var onStructureChange: (() -> Void)?
+    /// Drawn straight after a layer while compositing. Floating pixels use it
+    /// so a paste sits where its layer sits in the stack instead of on top of
+    /// everything until it is dropped.
+    var layerOverlay: ((Layer, CGContext) -> Void)?
 
     var size: CGSize { CGSize(width: width, height: height) }
     var bounds: CGRect { CGRect(x: 0, y: 0, width: width, height: height) }
@@ -127,6 +131,9 @@ final class Document {
         markRecorded()
         isDirty = true
         onChange?()
+        // The palettes show the pixels too — a thumbnail is as stale after an
+        // edit as the canvas is.
+        onStructureChange?()
     }
 
     /// Which history step the layers currently hold, so stepping to another
@@ -515,7 +522,10 @@ final class Document {
                 let scale = ctx.ctm.a
                 img = layer.image(forScale: abs(scale))
             }
-            guard let img else { continue }
+            guard let img else {
+                layerOverlay?(layer, ctx)
+                continue
+            }
             ctx.saveGState()
             ctx.setAlpha(layer.opacity)
             ctx.setBlendMode(layer.blendMode.cgBlendMode)
@@ -528,6 +538,7 @@ final class Document {
                 ctx.draw(img, in: bounds)
             }
             ctx.restoreGState()
+            layerOverlay?(layer, ctx)
         }
     }
 
