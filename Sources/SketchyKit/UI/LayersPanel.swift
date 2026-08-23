@@ -160,6 +160,12 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         scroll.frame = NSRect(x: 0, y: y, width: w, height: max(40, content.bounds.height - y))
     }
 
+    /// Selects a row as a click would, for tests.
+    func selectRow(_ row: Int) {
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+    }
+
     /// What the hint line currently reads.
     var hintText: String { hintLabel.stringValue }
 

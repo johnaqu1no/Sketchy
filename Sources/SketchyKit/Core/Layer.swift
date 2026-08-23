@@ -141,21 +141,34 @@ final class Layer {
 
 func drawCheckerboard(in rect: NSRect, cell: CGFloat) {
     guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+    // Only the part that can actually be seen is worth walking: zoomed in far
+    // enough, the full rect is millions of squares and drawing them all takes
+    // minutes and gigabytes.
+    let clip = ctx.boundingBoxOfClipPath
+    let visible = clip.isNull ? rect : rect.intersection(clip)
+    guard !visible.isNull, !visible.isEmpty, cell > 0 else { return }
+
     ctx.saveGState()
     ctx.clip(to: rect)
     ctx.setFillColor(NSColor(white: 0.80, alpha: 1).cgColor)
-    ctx.fill(rect)
+    ctx.fill(visible)
     ctx.setFillColor(NSColor(white: 0.62, alpha: 1).cgColor)
-    var y = rect.minY
-    var row = 0
-    while y < rect.maxY {
-        var x = rect.minX + (row % 2 == 0 ? 0 : cell)
-        while x < rect.maxX {
+
+    // Squares are laid out from the rect's own corner, so the pattern does not
+    // shift when only part of it is drawn.
+    let firstRow = Int(((visible.minY - rect.minY) / cell).rounded(.down))
+    let lastRow = Int(((visible.maxY - rect.minY) / cell).rounded(.up))
+    let firstColumn = Int(((visible.minX - rect.minX) / (cell * 2)).rounded(.down))
+    let lastColumn = Int(((visible.maxX - rect.minX) / (cell * 2)).rounded(.up))
+    guard lastRow >= firstRow, lastColumn >= firstColumn else { ctx.restoreGState(); return }
+
+    for row in firstRow...lastRow {
+        let y = rect.minY + CGFloat(row) * cell
+        let offset = row % 2 == 0 ? 0 : cell
+        for column in firstColumn...lastColumn {
+            let x = rect.minX + CGFloat(column) * cell * 2 + offset
             ctx.fill(CGRect(x: x, y: y, width: cell, height: cell))
-            x += cell * 2
         }
-        y += cell
-        row += 1
     }
     ctx.restoreGState()
 }

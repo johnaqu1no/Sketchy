@@ -1927,6 +1927,108 @@ do {
           "and no resampling setting behind")
 }
 
+section("a paste lands on the layer that is selected when it drops")
+do {
+    let doc = Document(width: 20, height: 20, background: nil)
+    doc.addLayer(named: "Second")
+    doc.selectedLayerIndex = 0
+    let settings = ToolSettings()
+    let engine = ToolEngine(doc: doc, settings: settings)
+
+    let clip = Layer(width: 6, height: 6, name: "clip")
+    clip.fill(with: .red)
+    guard let image = clip.image else { fatalError("no clip") }
+
+    engine.beginFloatingPaste(image, at: CGPoint(x: 5, y: 5))
+    check(engine.hasFloatingPixels, "the paste floats before it lands")
+
+    // Switching layers while it floats is the whole point: it should land on
+    // the layer chosen at drop time, not the one that was current at paste.
+    doc.selectedLayerIndex = 1
+    check(engine.commitFloatingPixels(), "the paste drops")
+    check((PixelOps.sample(doc.layers[1], x: 7, y: 7)?.r ?? 0) > 200, "on the layer picked afterwards")
+    equal(PixelOps.sample(doc.layers[0], x: 7, y: 7)?.a ?? 99, 0, "and not on the one it was pasted over")
+}
+
+windowSection("clicking a layer row selects that layer") {
+    let doc = Document(width: 8, height: 8, background: nil)
+    doc.addLayer(named: "Middle")
+    doc.addLayer(named: "Top")
+    let panel = LayersPanel()
+    panel.attach(doc)
+
+    // Rows run top-first, so the last row is the bottom layer.
+    equal(panel.visibleRows, [2, 1, 0], "three rows, top-most first")
+    panel.selectRow(2)
+    equal(doc.selectedLayerIndex, 0, "the bottom row selects the bottom layer")
+    panel.selectRow(0)
+    equal(doc.selectedLayerIndex, 2, "and the top row the top layer")
+
+    // A layer added behind the panel's back must not leave the mapping stale.
+    doc.addLayer(named: "Fourth")
+    panel.selectRow(3)
+    equal(doc.selectedLayerIndex, 0, "a row still means what it shows after the stack changes")
+}
+
+windowSection("cut and paste follow the selected layer") {
+    let doc = Document(width: 20, height: 20, background: nil)
+    doc.selectedLayer?.fill(with: .red)
+    doc.addLayer(named: "Second")
+    doc.selectedLayerIndex = 0
+
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: doc, hub: hub)
+    controller.doc.selectionPath = CGPath(rect: CGRect(x: 4, y: 4, width: 8, height: 8), transform: nil)
+
+    controller.cut(nil)
+    equal(PixelOps.sample(doc.layers[0], x: 8, y: 8)?.a ?? 99, 0, "cutting empties the source")
+
+    // Pick the other layer the way the palette does, then paste.
+    hub.layersPanel.selectRow(0)
+    equal(doc.selectedLayerIndex, 1, "the palette selected the upper layer")
+
+    controller.paste(nil)
+    controller.commitPendingEdits()
+    check((PixelOps.sample(doc.layers[1], x: 8, y: 8)?.r ?? 0) > 200, "the paste lands on the chosen layer")
+    equal(PixelOps.sample(doc.layers[0], x: 8, y: 8)?.a ?? 99, 0, "and not back where it was cut from")
+    controller.window?.close()
+}
+
+section("the checkerboard only draws what shows")
+do {
+    // Rendering a slice must give the same squares as rendering the lot: the
+    // clip is an optimisation, not a different pattern.
+    func board(clippedTo clip: CGRect?) -> Layer {
+        let layer = Layer(width: 64, height: 64, name: "board")
+        let ctx = layer.context
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        ctx.saveGState()
+        if let clip { ctx.clip(to: clip) }
+        drawCheckerboard(in: NSRect(x: 0, y: 0, width: 64, height: 64), cell: 8)
+        ctx.restoreGState()
+        NSGraphicsContext.restoreGraphicsState()
+        return layer
+    }
+
+    let whole = board(clippedTo: nil)
+    let slice = board(clippedTo: CGRect(x: 16, y: 16, width: 32, height: 32))
+    var compared = 0
+    var same = 0
+    for x in stride(from: 18, to: 46, by: 3) {
+        for y in stride(from: 18, to: 46, by: 3) {
+            compared += 1
+            if PixelOps.sample(whole, x: x, y: y)?.r == PixelOps.sample(slice, x: x, y: y)?.r { same += 1 }
+        }
+    }
+    equal(same, compared, "every square inside the clip matches the full drawing")
+    check((PixelOps.sample(slice, x: 4, y: 4)?.a ?? 99) == 0, "and nothing is drawn outside it")
+
+    // Both shades are present, so the comparison above is not comparing blanks.
+    let shades = Set((0..<8).map { PixelOps.sample(whole, x: $0 * 8 + 4, y: 4)?.r ?? 0 })
+    check(shades.count == 2, "the pattern still alternates")
+}
+
 section("floating pixels can be turned")
 do {
     let doc = Document(width: 40, height: 40, background: nil)
@@ -2076,8 +2178,8 @@ windowSection("zooming keeps the pointer on the same pixel") {
         canvas.imagePoint(from: canvas.convert(windowPoint, from: nil))
     }
 
-    // A point well off centre is the interesting one: a centred zoom moves it.
-    let pointer = NSPoint(x: 60, y: 220)
+    // A point well off centre, but over the image: that is what has to stay put.
+    let pointer = NSPoint(x: 200, y: 220)
     let before = imagePoint(under: pointer)
     canvas.setZoom(4, anchoredAt: pointer)
     canvas.layoutSubtreeIfNeeded()
@@ -2091,8 +2193,8 @@ windowSection("zooming keeps the pointer on the same pixel") {
     near(back.x, before.x, 1, "and across a zoom back out")
     near(back.y, before.y, 1, "in both directions")
 
-    // A corner has to be reachable, or zooming into it would slide away.
-    let corner = NSPoint(x: 4, y: 4)
+    // Near the image's own corner, which needs scrolling past the edge to hold.
+    let corner = NSPoint(x: 160, y: 160)
     let cornerBefore = imagePoint(under: corner)
     canvas.setZoom(8, anchoredAt: corner)
     canvas.layoutSubtreeIfNeeded()

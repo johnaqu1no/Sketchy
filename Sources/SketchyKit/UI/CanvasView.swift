@@ -119,11 +119,11 @@ final class CanvasView: NSView {
     func resizeToFit() {
         guard let clip = enclosingScrollView?.contentView else { return }
         let s = scaledSize
-        // Room to scroll past the edges. Without it a corner can never sit in
-        // the middle of the viewport, so zooming into one has to slide away
-        // from the pointer.
-        let padX = max(40, clip.bounds.width * 0.9)
-        let padY = max(40, clip.bounds.height * 0.9)
+        // Room to scroll past the edges, so a corner can sit anywhere on
+        // screen and a zoom into one does not slide away from the pointer.
+        // Capped: the scrollable area is a real cost at high zoom.
+        let padX = min(max(40, clip.bounds.width * 0.5), 600)
+        let padY = min(max(40, clip.bounds.height * 0.5), 600)
         let w = max(clip.bounds.width, s.width + padX * 2)
         let h = max(clip.bounds.height, s.height + padY * 2)
         setFrameSize(NSSize(width: w, height: h))
@@ -150,7 +150,12 @@ final class CanvasView: NSView {
         let r = imageRect
         let moved = NSPoint(x: r.minX + anchorInImage.x * zoom,
                             y: r.minY + anchorInImage.y * zoom)
-        clip.scroll(to: NSPoint(x: moved.x - inViewport.x, y: moved.y - inViewport.y))
+        // Stay inside the scrollable area: an origin outside it is snapped
+        // back by AppKit anyway, and the snap is what makes a zoom jump.
+        let limitX = max(0, bounds.width - clip.bounds.width)
+        let limitY = max(0, bounds.height - clip.bounds.height)
+        clip.scroll(to: NSPoint(x: (moved.x - inViewport.x).clamped(to: 0...limitX),
+                                y: (moved.y - inViewport.y).clamped(to: 0...limitY)))
         enclosingScrollView?.reflectScrolledClipView(clip)
         needsDisplay = true
     }

@@ -1120,7 +1120,10 @@ final class ToolEngine {
     // MARK: - Floating pixels
 
     private func liftFloatingPixels() {
-        guard let layer = doc.selectedLayer, let full = layer.image else { return }
+        guard let layer = doc.selectedRasterLayer, let full = layer.image else {
+            onStatus?("That is a group — select a layer inside it first")
+            return
+        }
         let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
         let box = sel.boundingBoxOfPath.integral.intersection(doc.bounds)
         guard !box.isEmpty else { return }
@@ -1311,7 +1314,13 @@ final class ToolEngine {
     /// is clipped away at this point, which is why it waits until now.
     @discardableResult
     func commitFloatingPixels() -> Bool {
-        guard let layer = doc.selectedLayer, let img = floatingImage else { return false }
+        guard let img = floatingImage else { return false }
+        // A group holds no pixels: keep them floating rather than dropping
+        // them into a bitmap nothing composites.
+        guard let layer = doc.selectedRasterLayer else {
+            onStatus?("That is a group — select a layer inside it to drop these pixels")
+            return false
+        }
         layer.context.saveGState()
         // Unscaled pixels are copied as they are; only a resize resamples.
         // A turn resamples whatever the size says, so only upright, unscaled
@@ -1400,7 +1409,7 @@ final class ToolEngine {
     /// Drops a paste, or puts lifted pixels back where they came from.
     func cancelFloatingPixels() {
         guard floatingImage != nil else { return }
-        if let snapshot = floatingUndoSnapshot, let layer = doc.selectedLayer {
+        if let snapshot = floatingUndoSnapshot, let layer = doc.selectedRasterLayer {
             layer.restore(from: snapshot)
         }
         doc.selectionPath = floatingStartSelection
