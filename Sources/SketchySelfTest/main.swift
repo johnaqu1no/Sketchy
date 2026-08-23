@@ -2053,6 +2053,66 @@ windowSection("layer thumbnails are cached and downsampled") {
           "an image already smaller than the target is left alone")
 }
 
+section("selections are steps in the history")
+do {
+    let doc = Document(width: 100, height: 100, background: .white)
+    let settings = ToolSettings()
+    settings.tool = .rectangleSelect
+    let engine = ToolEngine(doc: doc, settings: settings)
+    let steps = doc.history.entries.count
+
+    engine.mouseDown(at: CGPoint(x: 10, y: 10), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 40, y: 40), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 40, y: 40), modifiers: [])
+    equal(doc.history.entries.count, steps + 1, "the drag lands in the history")
+    equal(doc.history.currentTitle, "Rectangle Select", "named after the tool that made it")
+    equal(doc.selectionPath?.boundingBoxOfPath.width ?? 0, 30, "and selects what was dragged over")
+
+    // A second selection, then undo back through both.
+    engine.mouseDown(at: CGPoint(x: 60, y: 60), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 90, y: 90), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 90, y: 90), modifiers: [])
+    equal(doc.selectionPath?.boundingBoxOfPath.minX ?? 0, 60, "the second selection replaced the first")
+
+    doc.undo()
+    equal(doc.selectionPath?.boundingBoxOfPath.minX ?? -1, 10, "undo brings the first selection back")
+    doc.undo()
+    check(doc.selectionPath == nil, "and undoing again leaves nothing selected")
+    doc.redo()
+    equal(doc.selectionPath?.boundingBoxOfPath.minX ?? -1, 10, "redo puts it back")
+
+    // Selecting costs no pixels: the layers are all unchanged.
+    if let last = doc.history.entries.last {
+        for state in last.layers {
+            if case .unchanged = state.pixels.content { continue }
+            check(false, "a selection step should copy no pixels")
+        }
+    }
+
+    // Adding to a selection says so, and so do the document-wide commands.
+    settings.selectionMode = .union
+    engine.mouseDown(at: CGPoint(x: 60, y: 60), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 80, y: 80), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 80, y: 80), modifiers: [])
+    equal(doc.history.currentTitle, "Add to Selection", "a union says what it did")
+
+    doc.selectAll()
+    equal(doc.history.currentTitle, "Select All", "select all is a step")
+    doc.invertSelection()
+    equal(doc.history.currentTitle, "Invert Selection", "so is inverting")
+    doc.deselect()
+    equal(doc.history.currentTitle, "Deselect", "so is dropping the selection")
+    doc.undo()
+    check(doc.selectionPath != nil, "undoing a deselect brings the selection back")
+
+    // Nothing to do means no step: a deselect with nothing selected is not
+    // worth an entry.
+    doc.deselect()
+    let settled = doc.history.entries.count
+    doc.deselect()
+    equal(doc.history.entries.count, settled, "deselecting twice adds nothing")
+}
+
 section("undo keeps only what changed")
 do {
     let doc = Document(width: 200, height: 200, background: .white)

@@ -1071,7 +1071,9 @@ final class ToolEngine {
             doc.onChange?()
             return
         }
+        guard startedSelection != nil else { doc.selectionPath = nil; return }
         doc.selectionPath = nil
+        doc.commit("Deselect")
         doc.onChange?()
     }
 
@@ -1102,8 +1104,25 @@ final class ToolEngine {
         return fallback
     }
 
+    /// What a selection made with the current tool is called in the history.
+    private var selectionStepTitle: String {
+        switch activeSelectionMode {
+        case .replace:   return settings.tool.title
+        case .union:     return "Add to Selection"
+        case .exclude:   return "Subtract from Selection"
+        case .intersect: return "Intersect Selection"
+        case .xor:       return "Xor Selection"
+        }
+    }
+
     private func applySelection(_ new: CGPath) {
-        guard !new.isEmpty else { doc.selectionPath = nil; doc.onChange?(); return }
+        guard !new.isEmpty else {
+            guard doc.selectionPath != nil else { return }
+            doc.selectionPath = nil
+            doc.commit("Deselect")
+            doc.onChange?()
+            return
+        }
         let mode = activeSelectionMode
         if let existing = startedSelection, mode != .replace {
             switch mode {
@@ -1116,6 +1135,9 @@ final class ToolEngine {
         } else {
             doc.selectionPath = new
         }
+        // A selection is an edit like any other: it belongs in the history so
+        // it can be undone and stepped back to.
+        doc.commit(selectionStepTitle)
         doc.onChange?()
     }
 

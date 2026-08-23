@@ -75,7 +75,8 @@ final class Document {
         }
         for layer in layers { recordedVersions[layer.id] = layer.contentVersion }
         return HistorySnapshot(title: title, layers: states,
-                               selectedIndex: selectedLayerIndex, width: width, height: height)
+                               selectedIndex: selectedLayerIndex, width: width, height: height,
+                               selection: selectionPath)
     }
 
     /// The layers now match the newest step: the next edit is measured from
@@ -157,6 +158,7 @@ final class Document {
             return l
         }
         selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
+        selectionPath = snap.selection
         appliedStep = history.cursor
         isDirty = true
         onStructureChange?()
@@ -205,6 +207,7 @@ final class Document {
             recordedVersions[layer.id] = layer.contentVersion
         }
         selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
+        selectionPath = snap.selection
         appliedStep = target
         isDirty = true
         onStructureChange?()
@@ -782,12 +785,16 @@ final class Document {
     }
 
     func selectAll() {
+        guard selectionPath?.boundingBoxOfPath != bounds else { return }
         selectionPath = CGPath(rect: bounds, transform: nil)
+        commit("Select All")
         onChange?()
     }
 
     func deselect() {
+        guard selectionPath != nil else { return }
         selectionPath = nil
+        commit("Deselect")
         onChange?()
     }
 
@@ -797,6 +804,7 @@ final class Document {
         p.addRect(bounds)
         p.addPath(sel)
         selectionPath = p.copy(using: nil)
+        commit("Invert Selection")
         onChange?()
     }
 
