@@ -593,8 +593,11 @@ final class Document {
         case tooLarge(reason: String)
     }
 
-    /// Largest side a bitmap context handles comfortably.
-    static let maximumSide = 32_000
+    /// Hard ceiling on a side. Beyond this a document is refused outright.
+    static let maximumSide = 50_000
+    /// Largest side that needs no warning. Past it the document still opens,
+    /// but a flat bitmap of that size is heavy enough to say so first.
+    static let comfortableSide = 15_000
 
     static func bytesNeeded(width: Int, height: Int, layers: Int = 1) -> Int {
         // Four bytes a pixel per layer, and one more canvas for compositing.
@@ -611,14 +614,17 @@ final class Document {
         }
 
         let bytes = bytesNeeded(width: width, height: height, layers: layers)
-        // Two fifths of the machine is where editing stops being viable; a
-        // sixth is where it stops being comfortable.
+        // Two fifths of the machine is where editing stops being viable: past
+        // that the allocation itself is likely to fail, and a refusal beats a
+        // crash however large the side limit is.
         if bytes > physicalMemory * 2 / 5 {
             let gigabytes = Double(bytes) / 1_000_000_000
             return .tooLarge(reason: String(format: "That needs about %.1f GB, more than this Mac can work with.",
                                             gigabytes))
         }
-        if bytes > physicalMemory / 6 {
+        // Either a side past what is comfortable, or a working set big enough
+        // to crowd the machine, is worth a word first.
+        if width > comfortableSide || height > comfortableSide || bytes > physicalMemory / 6 {
             return .heavy(bytes: bytes)
         }
         return .fine

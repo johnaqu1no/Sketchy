@@ -1369,10 +1369,36 @@ do {
         check(false, "layer count should count against the limit")
     }
 
+    // 15000 a side is where a warning starts, whatever the machine has.
+    let plentyOfMemory = 512_000_000_000
+    equal(Document.verdict(width: 15000, height: 15000, physicalMemory: plentyOfMemory), .fine,
+          "15k a side is still waved through")
+    if case .heavy = Document.verdict(width: 15001, height: 800, physicalMemory: plentyOfMemory) {
+        check(true, "a pixel past it warns even on a machine with memory to spare")
+    } else {
+        check(false, "past 15000 a side should warn")
+    }
+    if case .heavy = Document.verdict(width: 50000, height: 50000, physicalMemory: plentyOfMemory) {
+        check(true, "50k a side is allowed on a machine that can hold it")
+    } else {
+        check(false, "50k should be the hard limit, not below it")
+    }
+    if case .tooLarge = Document.verdict(width: 50001, height: 10, physicalMemory: plentyOfMemory) {
+        check(true, "a pixel past the hard limit is refused")
+    } else {
+        check(false, "50001 should be refused")
+    }
+    // Memory still has the last word: a 50k canvas is 10 GB a layer.
+    if case .tooLarge = Document.verdict(width: 50000, height: 50000, physicalMemory: sixteenGB) {
+        check(true, "and refused outright when the machine cannot hold it")
+    } else {
+        check(false, "50k on 16 GB should be refused")
+    }
+
     // Absurd dimensions are rejected before any arithmetic about memory.
     if case .tooLarge(let reason) = Document.verdict(width: 100_000, height: 10,
                                                      physicalMemory: sixteenGB) {
-        check(reason.contains("32000"), "a side beyond the bitmap limit is named as the reason")
+        check(reason.contains("50000"), "a side beyond the hard limit is named as the reason")
     } else {
         check(false, "100k wide should be refused")
     }

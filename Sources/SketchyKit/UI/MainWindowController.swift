@@ -429,11 +429,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         case .heavy(let bytes):
             let alert = NSAlert()
             alert.messageText = "That is a large canvas"
+            let past = max(width, height) > Document.comfortableSide
+                ? " Anything past \(Document.comfortableSide) pixels a side is beyond what Sketchy is built for."
+                : ""
             alert.informativeText = String(
                 format: "%d × %d with %d layer%@ needs about %.1f GB while you work on it. "
-                    + "Sketchy will be slow, and other apps may suffer.",
+                    + "Sketchy will be slow, and other apps may suffer.%@",
                 width, height, layers, layers == 1 ? "" : "s",
-                Double(bytes) / 1_000_000_000)
+                Double(bytes) / 1_000_000_000, past)
             alert.addButton(withTitle: "Continue")
             alert.addButton(withTitle: "Cancel")
             return alert.runModal() == .alertFirstButtonReturn
