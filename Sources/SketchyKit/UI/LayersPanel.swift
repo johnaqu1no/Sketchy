@@ -1,8 +1,8 @@
 import AppKit
 
 /// Layer stack with visibility toggles, blend mode, opacity and the button bar.
-final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelegate {
-    private let table = NSTableView()
+final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+    private let table = LayerTableView()
     private let blendPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let opacitySlider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private let opacityLabel = NSTextField(labelWithString: "100%")
@@ -22,6 +22,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     private var isReloading = false
     /// Model indices in the order the table shows them.
     private(set) var visibleRows: [Int] = []
+    /// The layer being renamed in place, if any.
+    private var renamingIndex: Int?
 
     var onAdd: (() -> Void)?
     var onDelete: (() -> Void)?
@@ -55,6 +57,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         table.doubleAction = #selector(doubleClicked)
         table.target = self
         table.registerForDraggedTypes([.string])
+        table.onEnter = { [weak self] in self?.beginRename() == true }
         table.setDraggingSourceOperationMask(.move, forLocal: true)
         scroll.documentView = table
         content.addSubview(scroll)
@@ -256,6 +259,67 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         onChange?()
     }
 
+    // MARK: - Renaming
+
+    /// Puts the selected row's name into an editable field, the way ⏎ renames
+    /// a file in Finder. Typing goes to the field, so the single-letter tool
+    /// shortcuts stay out of the way until it is committed. False when there is
+    /// nothing to rename.
+    @discardableResult
+    func beginRename() -> Bool {
+        guard let doc = document, table.selectedRow >= 0 else { return false }
+        let index = modelIndex(forRow: table.selectedRow)
+        guard doc.layers.indices.contains(index) else { return false }
+        renamingIndex = index
+        // The cell may be off-screen in a scrolled table, in which case the
+        // rename still stands and only the field is missing.
+        (table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: true) as? LayerCellView)?
+            .beginEditing(delegate: self)
+        return true
+    }
+
+    /// Keeps `name` for the layer being renamed. False when the name is blank,
+    /// unchanged, or nothing was being renamed — none of which is worth a step.
+    @discardableResult
+    func commitRename(_ name: String) -> Bool {
+        let index = renamingIndex
+        renamingIndex = nil
+        closeEditor()
+        let typed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let doc = document, let index, doc.layers.indices.contains(index),
+              !typed.isEmpty, typed != doc.layers[index].name else { reload(); return false }
+        doc.layers[index].name = typed
+        doc.commit("Rename Layer")
+        reload()
+        onChange?()
+        return true
+    }
+
+    /// Abandons a rename in progress, leaving the name as it was.
+    func cancelRename() {
+        renamingIndex = nil
+        closeEditor()
+        reload()
+    }
+
+    /// Puts the editing row's label back to looking like a label.
+    private func closeEditor() {
+        guard table.selectedRow >= 0 else { return }
+        (table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: false) as? LayerCellView)?
+            .endEditing()
+    }
+
+    /// ⏎ or clicking away keeps the new name; ⎋ leaves it alone.
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField else { return }
+        let cancelled = (notification.userInfo?["NSTextMovement"] as? Int) == NSTextMovement.cancel.rawValue
+        if cancelled {
+            cancelRename()
+        } else {
+            commitRename(field.stringValue)
+        }
+    }
+
     // MARK: - Table
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -344,6 +408,18 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     }
 }
 
+/// A layer list that renames the selected row on ⏎, the way Finder does.
+final class LayerTableView: NSTableView {
+    /// Handles ⏎. Returns false when there was nothing to rename, so the key
+    /// carries on to whatever else would have taken it.
+    var onEnter: (() -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36 || event.keyCode == 76, onEnter?() == true { return }
+        super.keyDown(with: event)
+    }
+}
+
 /// A button that says what it does while the pointer is over it, instead of
 /// waiting on a tooltip that may never come.
 final class HintingButton: NSButton {
@@ -397,6 +473,27 @@ final class LayerCellView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Turns the name label into a live text field and hands it the keyboard.
+    func beginEditing(delegate: NSTextFieldDelegate) {
+        label.delegate = delegate
+        label.isEditable = true
+        label.isSelectable = true
+        label.isBezeled = true
+        label.bezelStyle = .squareBezel
+        label.drawsBackground = true
+        window?.makeFirstResponder(label)
+        label.currentEditor()?.selectAll(nil)
+    }
+
+    /// Puts the label back to looking like a label.
+    func endEditing() {
+        label.isEditable = false
+        label.isSelectable = false
+        label.isBezeled = false
+        label.drawsBackground = false
+        label.delegate = nil
+    }
 
     func apply(_ layer: Layer) {
         let x = CGFloat(layer.depth) * LayerCellView.indent

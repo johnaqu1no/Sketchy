@@ -2872,6 +2872,34 @@ do {
     equal(NSColor.fromHSV(h: 999, s: 999, v: 999).hexString, "A600FF", "out-of-range HSV wraps and clamps")
 }
 
+windowSection("⏎ renames the selected layer in place") {
+    let doc = Document(width: 20, height: 20, background: .white)
+    doc.addLayer(named: "Second")
+
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: doc, hub: hub)
+    let panel = hub.layersPanel
+    let steps = doc.history.entries.count
+
+    panel.selectRow(0)
+    equal(doc.selectedLayerIndex, 1, "the upper layer is selected")
+    check(panel.beginRename(), "⏎ opens the name for editing")
+    check(panel.commitRename("Sky"), "and typing a new one keeps it")
+    equal(doc.layers[1].name, "Sky", "the layer took the new name")
+    equal(doc.history.currentTitle, "Rename Layer", "as one undoable step")
+    equal(doc.history.entries.count, steps + 1, "and only one step")
+
+    check(doc.undo(), "the rename undoes")
+    equal(doc.layers[1].name, "Second", "back to the old name")
+
+    // An empty name, or the same one again, is not worth a history step.
+    panel.selectRow(0)
+    check(panel.beginRename(), "editing opens again")
+    check(!panel.commitRename("   "), "a blank name is refused")
+    equal(doc.layers[1].name, "Second", "and the name is left alone")
+    controller.window?.close()
+}
+
 section("handles stay reachable off the canvas")
 do {
     // A box dragged past the edge keeps its handles out there: they are what
