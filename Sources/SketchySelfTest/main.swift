@@ -2872,6 +2872,29 @@ do {
     equal(NSColor.fromHSV(h: 999, s: 999, v: 999).hexString, "A600FF", "out-of-range HSV wraps and clamps")
 }
 
+windowSection("a selection follows whichever layer is picked") {
+    // The selection belongs to the document, not a layer, so switching rows in
+    // the palette leaves it in place and the new layer is what it clips.
+    let doc = Document(width: 20, height: 20, background: .white)
+    doc.addLayer(named: "Second")
+    doc.selectedLayerIndex = 0
+
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: doc, hub: hub)
+    let box = CGRect(x: 4, y: 4, width: 8, height: 8)
+    doc.selectionPath = CGPath(rect: box, transform: nil)
+
+    hub.layersPanel.selectRow(0)
+    equal(doc.selectedLayerIndex, 1, "the palette switched to the upper layer")
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, box, "and the selection is untouched")
+
+    // An edit on the newly picked layer is clipped by that same selection.
+    controller.fillSelection(nil)
+    check((PixelOps.sample(doc.layers[1], x: 8, y: 8)?.a ?? 0) > 200, "a fill lands inside the selection")
+    equal(PixelOps.sample(doc.layers[1], x: 1, y: 1)?.a ?? 99, 0, "and nothing outside it")
+    controller.window?.close()
+}
+
 windowSection("⏎ renames the selected layer in place") {
     let doc = Document(width: 20, height: 20, background: .white)
     doc.addLayer(named: "Second")
