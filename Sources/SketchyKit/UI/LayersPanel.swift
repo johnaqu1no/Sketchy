@@ -35,6 +35,9 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     var onGroup: (() -> Void)?
     var onUngroup: (() -> Void)?
     var onChange: (() -> Void)?
+    /// Called just before the selected layer changes, so a pending edit can be
+    /// put down while the layer it belongs to is still the selected one.
+    var onBeforeSelect: (() -> Void)?
 
     init() {
         super.init(title: "Layers", size: NSSize(width: 262, height: 360))
@@ -398,7 +401,9 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isReloading, let doc = document, table.selectedRow >= 0 else { return }
-        doc.selectedLayerIndex = modelIndex(forRow: table.selectedRow)
+        let picked = modelIndex(forRow: table.selectedRow)
+        if picked != doc.selectedLayerIndex { onBeforeSelect?() }
+        doc.selectedLayerIndex = picked
         if let l = doc.selectedLayer {
             blendPopup.selectItem(withTitle: l.blendMode.rawValue)
             opacitySlider.doubleValue = Double(l.opacity * 100)

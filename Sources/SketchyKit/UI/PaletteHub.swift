@@ -89,6 +89,9 @@ final class PaletteHub {
         layersPanel.onGroup = { [weak controller] in controller?.groupLayer(nil) }
         layersPanel.onUngroup = { [weak controller] in controller?.ungroupLayer(nil) }
         layersPanel.onProperties = { [weak controller] in controller?.showLayerProperties() }
+        layersPanel.onBeforeSelect = { [weak controller] in
+            controller?.commitPendingEdits()
+        }
         layersPanel.onChange = { [weak self, weak controller] in
             controller?.refreshCanvas()
             self?.layersPanel.reload()

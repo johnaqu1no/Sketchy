@@ -3271,6 +3271,70 @@ do {
     check(painted == NSColor.blue, "and so did the text already typed")
 }
 
+section("lifted pixels land back on the layer they came from")
+do {
+    // A paste drops wherever the user picks, but lifted pixels were cut out of
+    // a layer: that hole is theirs to fill, whatever the selection does next.
+    let doc = Document(width: 20, height: 20, background: nil)
+    doc.addLayer(named: "Second")
+    doc.selectedLayerIndex = 0
+    guard let lower = doc.selectedLayer else { fatalError("no layer") }
+    lower.context.setFillColor(NSColor.red.cgColor)
+    lower.context.fill(CGRect(x: 4, y: 4, width: 8, height: 8))
+
+    let settings = ToolSettings()
+    settings.tool = .moveSelectedPixels
+    let engine = ToolEngine(doc: doc, settings: settings)
+    doc.selectionPath = CGPath(rect: CGRect(x: 4, y: 4, width: 8, height: 8), transform: nil)
+
+    engine.mouseDown(at: CGPoint(x: 8, y: 8), rightButton: false, modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 8, y: 8), modifiers: [])
+    check(engine.hasFloatingPixels, "the pixels lift off the lower layer")
+
+    // Move the selection to the upper layer behind the engine's back.
+    doc.selectedLayerIndex = 1
+    check(engine.commitFloatingPixels(), "the pixels drop")
+    check((PixelOps.sample(doc.layers[0], x: 8, y: 8)?.r ?? 0) > 200,
+          "back onto the layer they were cut from")
+    equal(PixelOps.sample(doc.layers[1], x: 8, y: 8)?.a ?? 99, 0,
+          "leaving the layer selected since then empty")
+}
+
+windowSection("switching layers leaves lifted pixels where they came from") {
+    // Move Selected Pixels lifts the pixels off the layer, so picking another
+    // row must put them back down first. Handing them to the newly selected
+    // layer would move the image, not just the selection outline.
+    let doc = Document(width: 40, height: 40, background: nil)
+    guard let lower = doc.selectedLayer else { fatalError("no layer") }
+    lower.context.setFillColor(NSColor.red.cgColor)
+    lower.context.fill(CGRect(x: 10, y: 10, width: 20, height: 20))
+    doc.addLayer(named: "Upper")
+    doc.selectedLayerIndex = 0
+
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: doc, hub: hub)
+    controller.settings.tool = .moveSelectedPixels
+    let box = CGRect(x: 10, y: 10, width: 20, height: 20)
+    doc.selectionPath = CGPath(rect: box, transform: nil)
+
+    // Click to lift, then drag the pixels somewhere new.
+    controller.engine.mouseDown(at: CGPoint(x: 20, y: 20), rightButton: false, modifiers: [])
+    check(controller.engine.hasFloatingPixels, "the pixels are floating")
+    controller.engine.mouseDragged(to: CGPoint(x: 25, y: 25), modifiers: [])
+    controller.engine.mouseUp(at: CGPoint(x: 25, y: 25), modifiers: [])
+
+    // Pick the upper layer. The float lands on the layer it was lifted from.
+    hub.layersPanel.selectRow(0)
+    equal(doc.selectedLayerIndex, 1, "the palette switched layers")
+    check(!controller.engine.hasFloatingPixels, "and the float was put down first")
+
+    check((PixelOps.sample(doc.layers[0], x: 25, y: 25)?.a ?? 0) > 200,
+          "the moved pixels stayed on their own layer")
+    equal(PixelOps.sample(doc.layers[1], x: 25, y: 25)?.a ?? 99, 0,
+          "and none of them landed on the layer just picked")
+    controller.window?.close()
+}
+
 print(failures == 0
       ? "\nAll \(checks) checks passed."
       : "\n\(failures) of \(checks) checks failed.")

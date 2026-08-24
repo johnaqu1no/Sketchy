@@ -32,6 +32,10 @@ final class ToolEngine {
     /// until they are committed. They keep their full size while floating, so
     /// dragging past the edge of the canvas and back loses nothing.
     private var floatingImage: CGImage?
+    /// The layer lifted pixels were cut out of, so they land back where they
+    /// came from however the selection moves in the meantime. Nil for a paste,
+    /// which took nothing away and so drops on whichever layer is picked.
+    private weak var floatingLayer: Layer?
     /// Where the floating pixels sit and how big they are. Resizing changes the
     /// size, so this is the source of truth rather than an offset.
     private var floatingFrame: CGRect = .zero
@@ -1212,6 +1216,7 @@ final class ToolEngine {
         cut.context.draw(full, in: doc.bounds)
         cut.context.restoreGState()
         floatingImage = cut.image
+        floatingLayer = layer
         floatingFrame = box
         floatingDragFrame = box
         floatingGrab = .move
@@ -1239,6 +1244,7 @@ final class ToolEngine {
     func beginFloatingPaste(_ image: CGImage, at origin: CGPoint) {
         commitFloatingPixels()
         floatingImage = image
+        floatingLayer = nil
         floatingFrame = CGRect(x: origin.x.rounded(), y: origin.y.rounded(),
                                width: CGFloat(image.width), height: CGFloat(image.height))
         floatingDragFrame = floatingFrame
@@ -1262,7 +1268,8 @@ final class ToolEngine {
     /// so anything above them covers them the way it will once they land.
     private func installFloatingOverlay() {
         doc.layerOverlay = { [weak self] layer, ctx in
-            guard let self, let img = floatingImage, layer === doc.selectedRasterLayer else { return }
+            guard let self, let img = floatingImage,
+                  layer === (floatingLayer ?? doc.selectedRasterLayer) else { return }
             ctx.saveGState()
             ctx.interpolationQuality = floatingIsUnscaled && floatingAngle == 0
                 ? .none : settings.resampling.quality
@@ -1412,7 +1419,7 @@ final class ToolEngine {
         guard let img = floatingImage else { return false }
         // A group holds no pixels: keep them floating rather than dropping
         // them into a bitmap nothing composites.
-        guard let layer = doc.selectedRasterLayer else {
+        guard let layer = floatingLayer ?? doc.selectedRasterLayer else {
             onStatus?("That is a group — select a layer inside it to drop these pixels")
             return false
         }
@@ -1427,6 +1434,7 @@ final class ToolEngine {
         removeFloatingOverlay()
         doc.selectionPath = floatingOutline()
         floatingImage = nil
+        floatingLayer = nil
         floatingUndoSnapshot = nil
         floatingStartSelection = nil
         floatingFrame = .zero
@@ -1505,11 +1513,12 @@ final class ToolEngine {
     /// Drops a paste, or puts lifted pixels back where they came from.
     func cancelFloatingPixels() {
         guard floatingImage != nil else { return }
-        if let snapshot = floatingUndoSnapshot, let layer = doc.selectedRasterLayer {
+        if let snapshot = floatingUndoSnapshot, let layer = floatingLayer ?? doc.selectedRasterLayer {
             layer.restore(from: snapshot)
         }
         doc.selectionPath = floatingStartSelection
         floatingImage = nil
+        floatingLayer = nil
         floatingUndoSnapshot = nil
         floatingFrame = .zero
         removeFloatingOverlay()
