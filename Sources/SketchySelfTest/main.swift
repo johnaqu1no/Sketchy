@@ -2872,6 +2872,34 @@ do {
     equal(NSColor.fromHSV(h: 999, s: 999, v: 999).hexString, "A600FF", "out-of-range HSV wraps and clamps")
 }
 
+section("handles stay reachable off the canvas")
+do {
+    // A box dragged past the edge keeps its handles out there: they are what
+    // you grab to pull it back or resize it.
+    let doc = Document(width: 20, height: 20)
+    let clip = Layer(width: 10, height: 10, name: "clip")
+    clip.fill(with: .red)
+    let settings = ToolSettings()
+    settings.tool = .moveSelectedPixels
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.beginFloatingPaste(clip.image!, at: CGPoint(x: 15, y: 15))
+
+    let corner = engine.floatingHandles()[4]
+    check(!doc.bounds.contains(corner), "the far corner sits outside the canvas")
+
+    // Drawing the chrome is what makes it visible; the canvas draws it outside
+    // its own clip, so a context no larger than the document still gets it.
+    let probe = Layer(width: 20, height: 20, name: "probe")
+    engine.drawChrome(in: probe.context, scale: 1)
+
+    // Grabbing that outside corner resizes rather than moving the whole box.
+    engine.mouseDown(at: corner, rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 30, y: 30), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 30, y: 30), modifiers: [])
+    near(engine.floatingRect.minX, 15, 0.6, "the anchored edge stayed put")
+    near(engine.floatingRect.width, 15, 0.6, "and the box grew past the edge")
+}
+
 print(failures == 0
       ? "\nAll \(checks) checks passed."
       : "\n\(failures) of \(checks) checks failed.")

@@ -1521,14 +1521,10 @@ final class ToolEngine {
     }
 
     /// Canvas overlay: preview geometry plus any floating pixels mid-drag.
-    func drawOverlay(in ctx: CGContext, scale: CGFloat) {
-        if let scratch = strokeScratch, let image = scratch.image {
-            ctx.saveGState()
-            ctx.setBlendMode(settings.blendMode.cgBlendMode)
-            if let sel = doc.selectionPath { ctx.addPath(sel); ctx.clip(using: .evenOdd) }
-            ctx.draw(image, in: strokeScratchRect)
-            ctx.restoreGState()
-        }
+    /// Handles and knobs, drawn by the canvas outside its clip so a box that
+    /// hangs off the edge can still be grabbed by the corner that is out there.
+    func drawChrome(in ctx: CGContext, scale: CGFloat) {
+        viewScale = scale
         if settings.tool == .moveSelection && floatingImage == nil {
             drawSelectionHandles(in: ctx, scale: scale)
         }
@@ -1539,11 +1535,22 @@ final class ToolEngine {
             drawRotationKnob(in: ctx, scale: scale)
         }
         if let s = session {
-            let path = sessionPath(s)
-            ctx.saveGState()
-            renderShape(path, in: ctx, bounds: doc.bounds)
-            ctx.restoreGState()
             drawSessionChrome(s, in: ctx, scale: scale)
+        }
+    }
+
+    func drawOverlay(in ctx: CGContext, scale: CGFloat) {
+        if let scratch = strokeScratch, let image = scratch.image {
+            ctx.saveGState()
+            ctx.setBlendMode(settings.blendMode.cgBlendMode)
+            if let sel = doc.selectionPath { ctx.addPath(sel); ctx.clip(using: .evenOdd) }
+            ctx.draw(image, in: strokeScratchRect)
+            ctx.restoreGState()
+        }
+        if let s = session {
+            ctx.saveGState()
+            renderShape(sessionPath(s), in: ctx, bounds: doc.bounds)
+            ctx.restoreGState()
         }
         guard let path = previewPath else { return }
         if previewStyle == .guide {

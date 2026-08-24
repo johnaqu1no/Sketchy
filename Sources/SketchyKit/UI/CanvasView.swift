@@ -314,6 +314,14 @@ final class CanvasView: NSView {
             ctx.restoreGState()
         }
 
+        // Handles are drawn outside the canvas clip: a box dragged past the
+        // edge still has to show the corner you grab to resize it.
+        ctx.saveGState()
+        ctx.translateBy(x: r.minX, y: r.minY)
+        ctx.scaleBy(x: zoom, y: zoom)
+        engine.drawChrome(in: ctx, scale: zoom)
+        ctx.restoreGState()
+
         drawBrushRing(in: ctx, imageRect: r)
 
         ctx.setStrokeColor(NSColor(calibratedWhite: 0.35, alpha: 1).cgColor)
