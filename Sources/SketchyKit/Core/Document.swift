@@ -712,8 +712,17 @@ final class Document {
             ?? CGPoint(x: 0, y: CGFloat(height) - size.height)
 
         let destination = CGRect(origin: corner, size: size)
-        layer.context.draw(image, in: destination)
-        selectionPath = CGPath(rect: destination, transform: nil)
+        layer.markEdited(destination)
+        // Landing on whole pixels at its own size, so a straight copy is right:
+        // smoothing here would soften every edge of the pasted art.
+        layer.rawContext.saveGState()
+        layer.rawContext.interpolationQuality = .none
+        layer.rawContext.draw(image, in: destination)
+        layer.rawContext.restoreGState()
+        // Anything hanging off the edge was clipped away, so the selection is
+        // only over pixels that actually landed.
+        let landed = destination.intersection(bounds)
+        selectionPath = landed.isEmpty ? nil : CGPath(rect: landed, transform: nil)
         commit("Paste")
         return destination
     }
@@ -765,34 +774,6 @@ final class Document {
             return .heavy(bytes: bytes)
         }
         return .fine
-    }
-
-    /// What to do when pasted pixels do not fit the canvas.
-    enum PasteFit {
-        /// Grow the canvas so the whole image fits, keeping the current art.
-        case expandCanvas
-        /// Make the canvas exactly the size of the pasted image.
-        case cropToImage
-        /// Leave the canvas alone; the paste hangs over the edge until dropped.
-        case keepCanvas
-
-        /// Canvas size this choice implies for an image of `imageSize`.
-        func canvasSize(current: CGSize, imageSize: CGSize) -> CGSize {
-            switch self {
-            case .expandCanvas:
-                return CGSize(width: max(current.width, imageSize.width),
-                              height: max(current.height, imageSize.height))
-            case .cropToImage:
-                return imageSize
-            case .keepCanvas:
-                return current
-            }
-        }
-    }
-
-    /// True when an image would hang over the edge of the canvas.
-    func exceedsCanvas(_ imageSize: CGSize) -> Bool {
-        imageSize.width > CGFloat(width) || imageSize.height > CGFloat(height)
     }
 
     func selectAll() {

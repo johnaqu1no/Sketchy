@@ -1273,30 +1273,23 @@ do {
     near(engine.measuredRect?.height ?? 0, 15, 0.6, "and its height")
 }
 
-section("oversized paste choices")
+section("a paste is cemented straight into the layer")
 do {
-    let doc = Document(width: 40, height: 30)
-    let big = CGSize(width: 100, height: 20)
-    check(doc.exceedsCanvas(big), "wider than the canvas counts as oversized")
-    check(doc.exceedsCanvas(CGSize(width: 10, height: 90)), "taller counts too")
-    check(!doc.exceedsCanvas(CGSize(width: 40, height: 30)), "an exact fit does not")
+    // No tool has to be picked and nothing is asked: the pixels land, clipped
+    // to the canvas, and what landed becomes the selection.
+    let doc = Document(width: 20, height: 20)
+    let clip = Layer(width: 40, height: 40, name: "clip")
+    clip.fill(with: .red)
 
-    let current = doc.size
-    equal(Document.PasteFit.expandCanvas.canvasSize(current: current, imageSize: big),
-          CGSize(width: 100, height: 30), "expanding grows only the axes that need it")
-    equal(Document.PasteFit.cropToImage.canvasSize(current: current, imageSize: big),
-          big, "cropping takes the image's size exactly")
-    equal(Document.PasteFit.keepCanvas.canvasSize(current: current, imageSize: big),
-          current, "keeping leaves the canvas alone")
-
-    // Expanding anchors the existing art at the top left.
-    doc.selectedLayer?.context.setFillColor(NSColor.red.cgColor)
-    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 20, width: 10, height: 10))
-    doc.resizeCanvas(to: Document.PasteFit.expandCanvas.canvasSize(current: current, imageSize: big),
-                     anchor: CGPoint(x: 0, y: 1))
-    equal(doc.width, 100, "canvas widened")
-    equal(doc.height, 30, "height untouched")
-    equal(pixel(doc, 5, 25)?.r ?? 0, 255, "the old art stayed in the top-left corner")
+    let landed = doc.paste(clip.image!)
+    equal(doc.history.currentTitle, "Paste", "one history step, already committed")
+    equal(pixel(doc, 10, 10)?.r ?? 0, 255, "the pixels are in the layer, not floating")
+    check(Int(pixel(doc, 10, 10)?.g ?? 255) < 60, "and they are the pasted red")
+    equal(landed?.width ?? 0, 40, "the paste reports its own size")
+    // A 40x40 clip lands at y = 20 - 40 = -20, so only its top-left quarter is
+    // on the canvas and only that much may be selected.
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, doc.bounds,
+          "the selection covers only what fitted")
 }
 
 section("tool shortcuts")

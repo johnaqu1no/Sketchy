@@ -457,26 +457,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
-    /// Paint.NET asks the same question: the answer changes the document, so it
-    /// should not be guessed at.
-    private func askAboutOversizedPaste(imageSize: CGSize) -> Document.PasteFit? {
-        let alert = NSAlert()
-        alert.messageText = "The pasted image is larger than the canvas"
-        alert.informativeText = "It is \(Int(imageSize.width)) x \(Int(imageSize.height)) pixels, "
-            + "and the canvas is \(doc.width) x \(doc.height)."
-        alert.addButton(withTitle: "Expand Canvas")
-        alert.addButton(withTitle: "Crop to Image")
-        alert.addButton(withTitle: "Keep Canvas Size")
-        alert.addButton(withTitle: "Cancel")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:  return .expandCanvas
-        case .alertSecondButtonReturn: return .cropToImage
-        case .alertThirdButtonReturn:  return .keepCanvas
-        default:                       return nil
-        }
-    }
-
     /// Confirms before a multi-layer document is flattened into a flat format.
     private func confirmFlatten(for url: URL) -> Bool {
         guard doc.layers.count > 1,
@@ -536,32 +516,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
             img = pasted.cgImage(forProposedRect: nil, context: nil, hints: nil)
         }
         guard let image = img else { return }
-        let size = CGSize(width: image.width, height: image.height)
+        guard doc.selectedRasterLayer != nil else { return groupWarning() }
 
-        // An image bigger than the canvas is a fork in the road, so ask rather
-        // than silently picking one.
-        if doc.exceedsCanvas(size) {
-            guard let fit = askAboutOversizedPaste(imageSize: size) else { return }
-            if fit != .keepCanvas {
-                let target = fit.canvasSize(current: doc.size, imageSize: size)
-                guard approveCanvasSize(width: Int(target.width), height: Int(target.height),
-                                        layers: doc.layers.count) else { return }
-                // Anchor top-left so existing art keeps its place.
-                doc.resizeCanvas(to: fit.canvasSize(current: doc.size, imageSize: size),
-                                 anchor: CGPoint(x: 0, y: 1))
-                doc.deselect()
-            }
-        }
-
-        // Land it in the top-left corner, or on the current selection.
-        let box = doc.selectionPath?.boundingBoxOfPath
-        let origin = box.map { CGPoint(x: $0.minX, y: $0.maxY - size.height) }
-            ?? CGPoint(x: 0, y: CGFloat(doc.height) - size.height)
-
-        selectTool(.moveSelectedPixels)
-        // Floating, not drawn: an image larger than the canvas can still be
-        // dragged around until it is where the user wants it.
-        engine.beginFloatingPaste(image, at: origin)
+        // Whatever was pending is put down first, so the paste is the top step.
+        commitPendingEdits()
+        // The pixels go into the layer as they are: a paste is an edit, not a
+        // question, so nothing is asked and nothing has to be dropped after.
+        // Anything past the canvas edge is clipped away, and the pasted region
+        // becomes the selection so it can be moved straight away.
+        doc.paste(image)
         refreshPanels()
     }
 
