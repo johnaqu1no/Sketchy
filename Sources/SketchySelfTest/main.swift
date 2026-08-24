@@ -1292,6 +1292,63 @@ do {
           "the selection covers only what fitted")
 }
 
+section("paste scaled to the canvas")
+do {
+    // A wide clip on a square canvas: the two canvas scales differ visibly.
+    let canvas = CGSize(width: 40, height: 40)
+    let wide = CGSize(width: 20, height: 10)
+
+    equal(Document.PasteScale.stretchToCanvas.destination(imageSize: wide, canvas: canvas,
+                                                          corner: CGPoint(x: 7, y: 7)),
+          CGRect(origin: .zero, size: canvas), "stretching fills the canvas and ignores the corner")
+    // Fitting scales by the tighter axis — 40/20 = 2 — and centres the slack one.
+    equal(Document.PasteScale.fitToCanvas.destination(imageSize: wide, canvas: canvas,
+                                                      corner: CGPoint(x: 7, y: 7)),
+          CGRect(x: 0, y: 10, width: 40, height: 20), "fitting keeps proportions and centres")
+    equal(Document.PasteScale.actualSize.destination(imageSize: wide, canvas: canvas,
+                                                     corner: CGPoint(x: 7, y: 7)),
+          CGRect(x: 7, y: 7, width: 20, height: 10), "actual size lands on the corner given")
+
+    // A taller-than-wide clip fits against the other axis instead.
+    equal(Document.PasteScale.fitToCanvas.destination(imageSize: CGSize(width: 10, height: 20),
+                                                      canvas: canvas, corner: .zero),
+          CGRect(x: 10, y: 0, width: 20, height: 40), "the tighter axis decides which way it fits")
+    // Nothing to scale: a degenerate image falls back to the whole canvas
+    // rather than dividing by zero.
+    equal(Document.PasteScale.fitToCanvas.destination(imageSize: .zero, canvas: canvas, corner: .zero),
+          CGRect(origin: .zero, size: canvas), "an empty image cannot be fitted")
+}
+
+section("a stretched paste covers the canvas")
+do {
+    let doc = Document(width: 40, height: 40)
+    let clip = Layer(width: 20, height: 10, name: "clip")
+    clip.fill(with: .red)
+
+    let landed = doc.paste(clip.image!, scale: .stretchToCanvas)
+    equal(landed ?? .zero, doc.bounds, "the paste covers the whole canvas")
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, doc.bounds, "and so does the selection")
+    for (x, y) in [(2, 2), (37, 37), (20, 2), (2, 37)] {
+        equal(pixel(doc, x, y)?.r ?? 0, 255, "corner \(x),\(y) is painted")
+        check(Int(pixel(doc, x, y)?.g ?? 255) < 60, "and it is the pasted red")
+    }
+}
+
+section("a fitted paste keeps its proportions")
+do {
+    let doc = Document(width: 40, height: 40, background: .white)
+    let clip = Layer(width: 20, height: 10, name: "clip")
+    clip.fill(with: .red)
+
+    let landed = doc.paste(clip.image!, scale: .fitToCanvas)
+    equal(landed ?? .zero, CGRect(x: 0, y: 10, width: 40, height: 20), "scaled x2 and centred")
+    equal(pixel(doc, 20, 20)?.r ?? 0, 255, "the middle is painted")
+    check(Int(pixel(doc, 20, 20)?.g ?? 255) < 60, "with the pasted red")
+    // The bands above and below are untouched: fitting does not distort.
+    equal(pixel(doc, 20, 2)?.g ?? 0, 255, "the band below is left alone")
+    equal(pixel(doc, 20, 37)?.g ?? 0, 255, "and the band above")
+}
+
 section("tool shortcuts")
 do {
     let suite = "SketchySelfTest-\(UUID().uuidString)"
@@ -2949,6 +3006,39 @@ do {
     engine.mouseUp(at: CGPoint(x: 30, y: 30), modifiers: [])
     near(engine.floatingRect.minX, 15, 0.6, "the anchored edge stayed put")
     near(engine.floatingRect.width, 15, 0.6, "and the box grew past the edge")
+}
+
+windowSection("the Edit menu pastes at each scale") {
+    let doc = Document(width: 40, height: 40, background: .white)
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: doc, hub: hub)
+
+    // Put a wide clip on the pasteboard the way Copy does.
+    let source = Document(width: 20, height: 10, background: .red)
+    let hub2 = PaletteHub()
+    let sourceController = MainWindowController(doc: source, hub: hub2)
+    sourceController.selectAll(nil)
+    sourceController.copy(nil)
+
+    controller.pasteStretchedToCanvas(nil)
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, doc.bounds, "stretching filled the canvas")
+    equal(doc.history.currentTitle, "Paste", "as one paste step")
+
+    check(doc.undo(), "and it undoes")
+    controller.pasteFitToCanvas(nil)
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, CGRect(x: 0, y: 10, width: 40, height: 20),
+          "fitting scaled it without distorting")
+
+    // A group holds no pixels, so neither scale may paste into one.
+    doc.addLayer(named: "Holder")
+    doc.groupSelected()
+    if doc.selectedLayer?.isGroup == true {
+        let steps = doc.history.entries.count
+        controller.pasteStretchedToCanvas(nil)
+        equal(doc.history.entries.count, steps, "a group takes no paste")
+    }
+    sourceController.window?.close()
+    controller.window?.close()
 }
 
 print(failures == 0

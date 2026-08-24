@@ -699,11 +699,48 @@ final class Document {
         return true
     }
 
+    /// How big pasted pixels are drawn.
+    enum PasteScale {
+        /// Every pixel one for one, wherever the paste lands.
+        case actualSize
+        /// Stretched to the whole canvas, proportions and all.
+        case stretchToCanvas
+        /// Scaled to touch the canvas on its tighter axis, keeping its
+        /// proportions, and centred on the slack one.
+        case fitToCanvas
+
+        /// Where an image of `imageSize` is drawn on a canvas of `canvas`.
+        /// `corner` is only consulted at actual size: the other two are about
+        /// the canvas, so where the paste would otherwise have landed is moot.
+        func destination(imageSize: CGSize, canvas: CGSize, corner: CGPoint) -> CGRect {
+            switch self {
+            case .actualSize:
+                return CGRect(origin: corner, size: imageSize)
+            case .stretchToCanvas:
+                return CGRect(origin: .zero, size: canvas)
+            case .fitToCanvas:
+                guard imageSize.width > 0, imageSize.height > 0 else {
+                    return CGRect(origin: .zero, size: canvas)
+                }
+                let scale = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
+                let size = CGSize(width: (imageSize.width * scale).rounded(),
+                                  height: (imageSize.height * scale).rounded())
+                return CGRect(x: ((canvas.width - size.width) / 2).rounded(),
+                              y: ((canvas.height - size.height) / 2).rounded(),
+                              width: size.width, height: size.height)
+            }
+        }
+    }
+
     /// Draws an image into the active layer and selects what was pasted, so it
-    /// can be dragged straight away. Without an origin it lands in the top-left
-    /// corner, or at the top-left of the current selection when there is one.
+    /// can be dragged straight away. At actual size, and without an origin, it
+    /// lands in the top-left corner, or at the top-left of the current
+    /// selection when there is one; the canvas-relative scales ignore both.
+    /// `resampling` only matters to a scale that resizes the pixels.
     @discardableResult
-    func paste(_ image: CGImage, at origin: CGPoint? = nil) -> CGRect? {
+    func paste(_ image: CGImage, at origin: CGPoint? = nil,
+               scale: PasteScale = .actualSize,
+               resampling: Resampling = .smooth) -> CGRect? {
         guard let layer = selectedRasterLayer else { return nil }
         let size = CGSize(width: image.width, height: image.height)
         let corner = origin
@@ -711,12 +748,14 @@ final class Document {
                 CGAffineTransform(translationX: 0, y: (selectionPath?.boundingBoxOfPath.height ?? 0) - size.height))
             ?? CGPoint(x: 0, y: CGFloat(height) - size.height)
 
-        let destination = CGRect(origin: corner, size: size)
+        let destination = scale.destination(imageSize: size, canvas: self.size, corner: corner)
         layer.markEdited(destination)
-        // Landing on whole pixels at its own size, so a straight copy is right:
-        // smoothing here would soften every edge of the pasted art.
+        // Pixels landing at their own size are copied as they are: smoothing
+        // there would soften every edge for nothing. A scale that resizes them
+        // has to resample, and takes the setting for it.
+        let unscaled = destination.size == size
         layer.rawContext.saveGState()
-        layer.rawContext.interpolationQuality = .none
+        layer.rawContext.interpolationQuality = unscaled ? .none : resampling.quality
         layer.rawContext.draw(image, in: destination)
         layer.rawContext.restoreGState()
         // Anything hanging off the edge was clipped away, so the selection is

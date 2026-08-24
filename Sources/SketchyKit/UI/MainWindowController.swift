@@ -509,22 +509,33 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
-    @objc func paste(_ sender: Any?) {
-        var img = clipboardImage
-        if img == nil,
-           let pasted = NSPasteboard.general.readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage {
-            img = pasted.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        }
-        guard let image = img else { return }
-        guard doc.selectedRasterLayer != nil else { return groupWarning() }
+    /// The image on the clipboard, preferring what this app last copied so a
+    /// round trip through the pasteboard cannot lose anything.
+    private var pasteboardImage: CGImage? {
+        if let clipboardImage { return clipboardImage }
+        guard let pasted = NSPasteboard.general
+            .readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage else { return nil }
+        return pasted.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
 
+    @objc func paste(_ sender: Any?) { paste(scale: .actualSize) }
+
+    /// Stretches the paste over the whole canvas, proportions be damned.
+    @objc func pasteStretchedToCanvas(_ sender: Any?) { paste(scale: .stretchToCanvas) }
+
+    /// Scales the paste to the canvas without distorting it, centred.
+    @objc func pasteFitToCanvas(_ sender: Any?) { paste(scale: .fitToCanvas) }
+
+    /// The pixels go into the layer as they are: a paste is an edit, not a
+    /// question, so nothing is asked and nothing has to be dropped after.
+    /// Anything past the canvas edge is clipped away, and the pasted region
+    /// becomes the selection so it can be moved straight away.
+    private func paste(scale: Document.PasteScale) {
+        guard let image = pasteboardImage else { return }
+        guard doc.selectedRasterLayer != nil else { return groupWarning() }
         // Whatever was pending is put down first, so the paste is the top step.
         commitPendingEdits()
-        // The pixels go into the layer as they are: a paste is an edit, not a
-        // question, so nothing is asked and nothing has to be dropped after.
-        // Anything past the canvas edge is clipped away, and the pasted region
-        // becomes the selection so it can be moved straight away.
-        doc.paste(image)
+        doc.paste(image, scale: scale, resampling: settings.resampling)
         refreshPanels()
     }
 

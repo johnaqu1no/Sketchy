@@ -210,6 +210,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(item("Copy", #selector(MainWindowController.copy(_:)), "c"))
         edit.addItem(item("Paste", #selector(MainWindowController.paste(_:)), "v"))
         edit.addItem(item("Paste Into New Layer", #selector(MainWindowController.pasteIntoNewLayer(_:)), "V", [.command, .shift]))
+        edit.addItem(item("Paste Stretched to Canvas",
+                          #selector(MainWindowController.pasteStretchedToCanvas(_:)), ""))
+        edit.addItem(item("Paste Fit to Canvas",
+                          #selector(MainWindowController.pasteFitToCanvas(_:)), ""))
         edit.addItem(.separator())
         // One command, three key codes: the menu displays ⌫ for 0x08, the ⌫ key
         // actually reports 0x7F, and ⌦ (fn-delete) reports NSDeleteFunctionKey.
