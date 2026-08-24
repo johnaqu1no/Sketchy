@@ -246,6 +246,15 @@ enum Resampling: String, CaseIterable {
     }
 }
 
+/// What the recolor brush treats as the color to replace.
+enum RecolorTarget: String, CaseIterable {
+    /// The secondary color, as set in the palette.
+    case secondaryColor = "Secondary Color"
+    /// Whatever sits under the pointer when the stroke starts, so any color on
+    /// the canvas can be targeted without loading it into the palette first.
+    case sampledColor = "Color Under Cursor"
+}
+
 enum SelectionMode: String, CaseIterable {
     case replace = "Replace"
     case union = "Add (union)"
@@ -280,6 +289,8 @@ final class ToolSettings {
     /// hard edges unless the user asks for smoothing.
     var resampling: Resampling = .pixels
     var fillGlobally: Bool = false
+    /// Which color the recolor brush replaces.
+    var recolorTarget: RecolorTarget = .secondaryColor
 
     /// What a scroll over the canvas changes for the current tool. The first
     /// option is the one the tool is mostly about; the second is for the

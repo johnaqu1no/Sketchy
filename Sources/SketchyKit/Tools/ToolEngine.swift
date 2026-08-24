@@ -128,6 +128,9 @@ final class ToolEngine {
     private var isDragging = false
     private var usesSecondary = false
     private var startedSelection: CGPath?
+    /// The color a sampled recolor stroke is replacing. Taken once when the
+    /// stroke starts: sampling per dab would chase the pixels it just changed.
+    private var recolorSampled: NSColor?
     /// Mode for the drag in progress: the options bar setting unless a modifier
     /// overrides it.
     private var activeSelectionMode: SelectionMode = .replace
@@ -172,6 +175,7 @@ final class ToolEngine {
         case .paintbrush, .pencil, .eraser:
             dab(from: p, to: p)
         case .recolor:
+            recolorSampled = settings.recolorTarget == .sampledColor ? sampledColor(at: p) : nil
             recolorDab(at: p)
         case .cloneStamp:
             if modifiers.contains(.option) || modifiers.contains(.command) {
@@ -316,7 +320,7 @@ final class ToolEngine {
         case .paintbrush, .pencil, .eraser:
             dab(from: lastPoint, to: p)
         case .recolor:
-            recolorDab(at: p)
+            recolorDab(from: lastPoint, to: p)
         case .cloneStamp:
             cloneDab(at: p)
         case .healingBrush, .spotHealing:
@@ -811,14 +815,53 @@ final class ToolEngine {
         ctx.restoreGState()
     }
 
+    /// Recolors along a segment. Pointer events arrive far apart on a fast
+    /// drag, so a dab at each one leaves gaps; this steps along the gap so the
+    /// stroke is continuous however fast the pointer moved.
+    private func recolorDab(from a: CGPoint, to b: CGPoint) {
+        let distance = hypot(b.x - a.x, b.y - a.y)
+        // Close enough that one dab already covers the span.
+        guard distance > settings.brushWidth / 2 else { return recolorDab(at: b) }
+        // Half a brush per step, so consecutive dabs overlap and leave no seam.
+        let step = max(1, settings.brushWidth / 2)
+        let steps = Int((distance / step).rounded(.up))
+        for i in 0...steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            recolorDab(at: CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t))
+        }
+    }
+
     private func recolorDab(at p: CGPoint) {
-        guard let layer = doc.selectedLayer else { return }
         let r = CGRect(x: p.x - settings.brushWidth / 2, y: p.y - settings.brushWidth / 2,
                        width: settings.brushWidth, height: settings.brushWidth)
+        recolor(in: r)
+    }
+
+    private func recolor(in r: CGRect) {
+        guard let layer = doc.selectedLayer else { return }
+        // A sampled stroke replaces what was under the pointer when it began;
+        // otherwise the palette's other color is the one being replaced. Either
+        // way the color painted on is the one the button chose.
+        let replacing = recolorSampled ?? (usesSecondary ? primaryColor : secondaryColor)
         PixelOps.recolor(layer: layer, in: r,
-                         from: usesSecondary ? primaryColor : secondaryColor,
+                         from: replacing,
                          to: usesSecondary ? secondaryColor : primaryColor,
                          tolerance: settings.tolerance)
+    }
+
+    /// The color on the canvas at `p`, honouring the sample-merged setting the
+    /// color picker uses, so both tools read the same pixel.
+    private func sampledColor(at p: CGPoint) -> NSColor? {
+        let source: Layer? = settings.sampleMerged
+            ? {
+                guard let img = doc.composite() else { return nil }
+                let l = Layer(width: doc.width, height: doc.height, name: "merged")
+                l.draw(image: img); return l
+            }()
+            : doc.selectedLayer
+        guard let layer = source,
+              let px = PixelOps.sample(layer, x: Int(p.x), y: Int(p.y)) else { return nil }
+        return PixelOps.color(from: px)
     }
 
     private func cloneDab(at p: CGPoint) {

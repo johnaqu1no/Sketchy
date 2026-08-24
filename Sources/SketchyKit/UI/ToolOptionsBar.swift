@@ -151,6 +151,17 @@ final class ToolOptionsBar: NSView {
             addSizeControl()
             if settings.tool == .recolor {
                 addSlider(title: "Tolerance", value: settings.tolerance, action: #selector(toleranceChanged(_:)))
+                stack.addArrangedSubview(label("Replace:"))
+                stack.addArrangedSubview(popup(RecolorTarget.allCases.map(\.rawValue),
+                                               selected: settings.recolorTarget.rawValue,
+                                               width: 150, action: #selector(recolorTargetChanged(_:))))
+                // Sampling only matters when the target comes off the canvas.
+                if settings.recolorTarget == .sampledColor {
+                    stack.addArrangedSubview(label("Sampling:"))
+                    stack.addArrangedSubview(popup(["Layer", "Image"],
+                                                   selected: settings.sampleMerged ? "Image" : "Layer",
+                                                   width: 100, action: #selector(samplingChanged(_:))))
+                }
             }
         case .healingBrush, .spotHealing:
             addSizeControl()
@@ -312,6 +323,12 @@ final class ToolOptionsBar: NSView {
     }
     @objc private func samplingChanged(_ sender: NSPopUpButton) {
         settings.sampleMerged = (sender.titleOfSelectedItem == "Image"); onChange?()
+    }
+    @objc private func recolorTargetChanged(_ sender: NSPopUpButton) {
+        settings.recolorTarget = RecolorTarget(rawValue: sender.titleOfSelectedItem ?? "") ?? .secondaryColor
+        // The sampling popup appears and disappears with the mode.
+        rebuild()
+        onChange?()
     }
     @objc private func resamplingChanged(_ sender: NSPopUpButton) {
         settings.resampling = Resampling(rawValue: sender.titleOfSelectedItem ?? "") ?? .pixels

@@ -164,7 +164,8 @@ final class StatusBar: NSView {
             parts = [("Drag", "Move"), ("Handles", "Resize"), ("Knob", "Rotate"),
                      ("⇧", "Proportions / 15°"), ("⏎", "Drop"), ("⎋", "Put back")]
         case .recolor:
-            parts = [("Drag", "Replace secondary with primary"), ("Right-drag", "Reverse")]
+            parts = [("Drag", "Paint primary over the replaced color"),
+                     ("Right-drag", "Reverse"), ("Replace", "What is targeted")]
         }
         let s = NSMutableAttributedString()
         for (i, part) in parts.enumerated() {

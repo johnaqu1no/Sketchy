@@ -3099,6 +3099,106 @@ do {
           "and a .png is really PNG")
 }
 
+section("recolor targets a color off the canvas")
+do {
+    // Three bands: green, blue, white. Recolor must take the one it is aimed
+    // at and leave the others alone.
+    let doc = Document(width: 30, height: 30, background: .white)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.context.setFillColor(NSColor.green.cgColor)
+    layer.context.fill(CGRect(x: 0, y: 0, width: 30, height: 10))
+    layer.context.setFillColor(NSColor.blue.cgColor)
+    layer.context.fill(CGRect(x: 0, y: 10, width: 30, height: 10))
+    doc.commit("Bands")
+
+    let settings = ToolSettings()
+    settings.tool = .recolor
+    settings.brushWidth = 30
+    settings.tolerance = 0.1
+    settings.recolorTarget = .sampledColor
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .red
+
+    // Brushing the green band replaces green, not the blue above it.
+    engine.mouseDown(at: CGPoint(x: 15, y: 5), rightButton: false, modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 15, y: 5), modifiers: [])
+    equal(PixelOps.sample(layer, x: 15, y: 5)?.r ?? 0, 255, "the sampled band went red")
+    check(Int(PixelOps.sample(layer, x: 15, y: 5)?.g ?? 255) < 60, "and is no longer green")
+    check((PixelOps.sample(layer, x: 15, y: 15)?.b ?? 0) > 200, "the blue band is untouched")
+    equal(doc.history.currentTitle, "Recolor", "one history step")
+
+    // Aimed at blue instead, the same brush takes blue — nothing about the
+    // tool is fixed to white.
+    engine.mouseDown(at: CGPoint(x: 15, y: 15), rightButton: false, modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 15, y: 15), modifiers: [])
+    equal(PixelOps.sample(layer, x: 15, y: 15)?.r ?? 0, 255, "blue was replaced too")
+    check(Int(PixelOps.sample(layer, x: 15, y: 15)?.b ?? 255) < 60, "and is no longer blue")
+    // White was never targeted, so it is still there.
+    equal(PixelOps.sample(layer, x: 15, y: 25)?.g ?? 0, 255, "white was left alone")
+}
+
+section("recolor keeps replacing the color it started on")
+do {
+    // Sampling every dab would chase the pixels the stroke just laid down, so
+    // the target is locked in at mouse-down.
+    let doc = Document(width: 40, height: 10, background: .white)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    let settings = ToolSettings()
+    settings.tool = .recolor
+    settings.brushWidth = 8
+    settings.tolerance = 0.1
+    settings.recolorTarget = .sampledColor
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .red
+
+    engine.mouseDown(at: CGPoint(x: 4, y: 5), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 36, y: 5), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 36, y: 5), modifiers: [])
+    // Every step of the drag replaced white, so the whole band is red.
+    for x in [6, 14, 22, 30, 34] {
+        equal(PixelOps.sample(layer, x: x, y: 5)?.r ?? 0, 255, "x=\(x) was recolored")
+        check(Int(PixelOps.sample(layer, x: x, y: 5)?.g ?? 255) < 60, "and is red at x=\(x)")
+    }
+}
+
+section("a fast recolor drag leaves no gaps")
+do {
+    // One pointer event jumping the width of the canvas: without stepping, the
+    // stroke would only touch the two ends.
+    let doc = Document(width: 60, height: 20, background: .white)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    let settings = ToolSettings()
+    settings.tool = .recolor
+    settings.brushWidth = 6
+    settings.tolerance = 0.1
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .red
+    engine.secondaryColor = .white
+
+    engine.mouseDown(at: CGPoint(x: 5, y: 10), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 55, y: 10), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 55, y: 10), modifiers: [])
+
+    // Every point along the way is covered, not just where the events landed.
+    for x in stride(from: 6, through: 54, by: 4) {
+        equal(PixelOps.sample(layer, x: x, y: 10)?.r ?? 0, 255, "x=\(x) is covered")
+        check(Int(PixelOps.sample(layer, x: x, y: 10)?.g ?? 255) < 60, "with no gap at x=\(x)")
+    }
+
+    // A diagonal jump is stepped too, and does not smear the corners of its
+    // bounding box.
+    let doc2 = Document(width: 40, height: 40, background: .white)
+    guard let layer2 = doc2.selectedLayer else { fatalError("no layer") }
+    let engine2 = ToolEngine(doc: doc2, settings: settings)
+    engine2.primaryColor = .red
+    engine2.secondaryColor = .white
+    engine2.mouseDown(at: CGPoint(x: 5, y: 5), rightButton: false, modifiers: [])
+    engine2.mouseDragged(to: CGPoint(x: 35, y: 35), modifiers: [])
+    engine2.mouseUp(at: CGPoint(x: 35, y: 35), modifiers: [])
+    equal(PixelOps.sample(layer2, x: 20, y: 20)?.r ?? 0, 255, "the diagonal is covered in the middle")
+    equal(PixelOps.sample(layer2, x: 34, y: 6)?.g ?? 0, 255, "and the far corner is untouched")
+}
+
 print(failures == 0
       ? "\nAll \(checks) checks passed."
       : "\n\(failures) of \(checks) checks failed.")
