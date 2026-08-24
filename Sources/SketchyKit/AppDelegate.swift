@@ -198,6 +198,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         file.addItem(item("Save", #selector(MainWindowController.saveDocument(_:)), "s"))
         file.addItem(item("Save As…", #selector(MainWindowController.saveDocumentAs(_:)), "S", [.command, .shift]))
         file.addItem(.separator())
+        // No key equivalent: ⌘⇧E is Sepia, and export is the rarer command.
+        file.addItem(item("Export as Flat Image…",
+                          #selector(MainWindowController.exportFlatImage(_:)), ""))
+        file.addItem(.separator())
         file.addItem(item("Close Tab", #selector(NSWindow.performClose(_:)), "w"))
         addSubmenu(file, to: main)
 

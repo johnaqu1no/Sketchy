@@ -944,13 +944,28 @@ final class Document {
             try writeNative(to: url)
             return
         }
+        try writeFlat(to: url)
+        fileURL = url
+        isDirty = false
+    }
+
+    /// Writes the composited image to `url`, picking the format from its
+    /// extension. This is what saving to a flat format does, and what Export
+    /// does — except that exporting leaves `fileURL` and the dirty flag alone,
+    /// so the document still belongs to whatever file it came from.
+    func export(to url: URL) throws {
+        try writeFlat(to: url)
+    }
+
+    /// Every visible layer merged down and encoded. A hidden layer is left out,
+    /// the same as it is on screen.
+    private func writeFlat(to url: URL) throws {
         guard let img = composite() else { throw DocumentError.encodeFailed }
         let rep = NSBitmapImageRep(cgImage: img)
         rep.size = NSSize(width: width, height: height)
-        let ext = url.pathExtension.lowercased()
         let type: NSBitmapImageRep.FileType
         var props: [NSBitmapImageRep.PropertyKey: Any] = [:]
-        switch ext {
+        switch url.pathExtension.lowercased() {
         case "jpg", "jpeg":
             type = .jpeg
             props[.compressionFactor] = 0.92
@@ -963,8 +978,6 @@ final class Document {
             throw DocumentError.encodeFailed
         }
         try data.write(to: url)
-        fileURL = url
-        isDirty = false
     }
 
     static func open(url: URL) throws -> Document {

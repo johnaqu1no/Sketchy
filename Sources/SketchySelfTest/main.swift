@@ -3041,6 +3041,64 @@ windowSection("the Edit menu pastes at each scale") {
     controller.window?.close()
 }
 
+section("exporting a flat image leaves the document alone")
+do {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("SketchyExport-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    // Two layers, so a flat export has something to merge.
+    let doc = Document(width: 20, height: 20, background: .white)
+    doc.addLayer(named: "Top")
+    doc.selectedLayer?.context.setFillColor(NSColor.red.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 0, width: 10, height: 20))
+    doc.commit("Paint")
+
+    let native = dir.appendingPathComponent("art.sketchy")
+    try? doc.write(to: native)
+    equal(doc.fileURL, native, "saving adopted the file")
+    check(!doc.isDirty, "and marked it clean")
+
+    // Exporting is not saving: the document still belongs to its own file.
+    let flat = dir.appendingPathComponent("export.png")
+    doc.isDirty = true
+    do { try doc.export(to: flat) } catch { check(false, "export threw \(error)") }
+    check(FileManager.default.fileExists(atPath: flat.path), "the flat file was written")
+    equal(doc.fileURL, native, "the document kept its own file")
+    check(doc.isDirty, "and unsaved work is still unsaved")
+    equal(doc.layers.count, 2, "the layers are untouched")
+
+    // What came out is the composite, both layers merged.
+    let reopened = try? Document.open(url: flat)
+    check(reopened != nil, "the exported file reads back")
+    if let reopened {
+        equal(reopened.layers.count, 1, "the export is one flat layer")
+        equal(reopened.width, 20, "at the document's size")
+        equal(PixelOps.sample(reopened.layers[0], x: 5, y: 10)?.r ?? 0, 255, "the top layer is in it")
+        check(Int(PixelOps.sample(reopened.layers[0], x: 5, y: 10)?.g ?? 255) < 60, "as red")
+        equal(PixelOps.sample(reopened.layers[0], x: 15, y: 10)?.g ?? 0, 255, "and the background under it")
+    }
+
+    // A hidden layer is left out, matching what the canvas shows.
+    doc.layers[1].isVisible = false
+    let hidden = dir.appendingPathComponent("hidden.png")
+    do { try doc.export(to: hidden) } catch { check(false, "export threw \(error)") }
+    if let out = try? Document.open(url: hidden) {
+        equal(PixelOps.sample(out.layers[0], x: 5, y: 10)?.g ?? 0, 255,
+              "a hidden layer is not exported")
+    }
+
+    // The extension picks the encoder.
+    let jpeg = dir.appendingPathComponent("art.jpg")
+    do { try doc.export(to: jpeg) } catch { check(false, "jpeg export threw \(error)") }
+    check((try? Data(contentsOf: jpeg))?.starts(with: [0xFF, 0xD8]) == true, "a .jpg is really JPEG")
+    let png = dir.appendingPathComponent("art.png")
+    do { try doc.export(to: png) } catch { check(false, "png export threw \(error)") }
+    check((try? Data(contentsOf: png))?.starts(with: [0x89, 0x50, 0x4E, 0x47]) == true,
+          "and a .png is really PNG")
+}
+
 print(failures == 0
       ? "\nAll \(checks) checks passed."
       : "\n\(failures) of \(checks) checks failed.")

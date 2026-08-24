@@ -424,6 +424,30 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
+    /// Writes a flattened copy without the document adopting the file: the
+    /// window keeps pointing at whatever it was editing, and unsaved work stays
+    /// unsaved. Nothing is asked about flattening, since that is the whole
+    /// point of the command.
+    @objc func exportFlatImage(_ sender: Any?) {
+        commitPendingEdits()
+        refreshPanels()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png, .jpeg, .tiff, .bmp, .gif]
+        panel.nameFieldStringValue = doc.displayName + ".png"
+        panel.message = doc.layers.count > 1
+            ? "Every visible layer is merged into one image. The document itself is untouched."
+            : "The document itself is untouched."
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            do {
+                try doc.export(to: url)
+                statusBar.flash("Exported " + url.lastPathComponent, thenHintFor: settings.tool)
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
     /// Checks a proposed canvas size before anything is allocated. Returns
     /// false when the size is refused, or when the user backs out of a size
     /// big enough to be worth a warning.
