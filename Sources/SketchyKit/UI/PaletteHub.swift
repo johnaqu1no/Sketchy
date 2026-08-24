@@ -57,9 +57,10 @@ final class PaletteHub {
         toolsPanel.select(controller.settings.tool)
 
         colorsPanel.onColorsChanged = { [weak self] primary, secondary in
-            guard let engine = self?.activeController?.engine else { return }
-            engine.primaryColor = primary
-            engine.secondaryColor = secondary
+            guard let active = self?.activeController else { return }
+            active.engine.primaryColor = primary
+            active.engine.secondaryColor = secondary
+            active.colorsChanged()
         }
         controller.engine.primaryColor = colorsPanel.primary
         controller.engine.secondaryColor = colorsPanel.secondary

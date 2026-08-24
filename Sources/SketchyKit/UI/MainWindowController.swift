@@ -174,6 +174,18 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         window?.isDocumentEdited = doc.isDirty
     }
 
+    /// A color picked while an edit is still pending applies to that edit: the
+    /// shape, line or text on the canvas is redrawn in it rather than keeping
+    /// the color it was started with.
+    func colorsChanged() {
+        textOverlay?.setColor(colorsPanel.primary)
+        // A pending shape or line is drawn from the engine's colors each frame,
+        // so it only needs the redraw.
+        if engine.session != nil || textOverlay != nil {
+            refreshCanvas()
+        }
+    }
+
     func selectTool(_ tool: ToolID) {
         // Anything still floating is put down before the tool changes under it.
         if tool != settings.tool {

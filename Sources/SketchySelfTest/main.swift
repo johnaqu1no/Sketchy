@@ -3199,6 +3199,78 @@ do {
     equal(PixelOps.sample(layer2, x: 34, y: 6)?.g ?? 0, 255, "and the far corner is untouched")
 }
 
+section("a pending shape follows the current color")
+do {
+    // The preview and the commit both read the engine's colors, so a color
+    // picked while the shape is still live is the one it lands in.
+    let doc = Document(width: 30, height: 30, background: .white)
+    let settings = ToolSettings()
+    settings.tool = .shapes
+    settings.shape = .rectangle
+    settings.drawMode = .fill
+    settings.fillStyle = .solidColor
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .red
+    engine.secondaryColor = .green
+
+    engine.mouseDown(at: CGPoint(x: 5, y: 5), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 25, y: 25), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 25, y: 25), modifiers: [])
+    check(engine.session != nil, "the shape is still live after the drag")
+
+    // Draw the preview into a probe: it comes out in the colour set right now.
+    let before = Layer(width: 30, height: 30, name: "before")
+    engine.drawOverlay(in: before.context, scale: 1)
+    check((PixelOps.sample(before, x: 15, y: 15)?.g ?? 0) > 200, "the preview fills with the secondary")
+
+    // Change the fill colour with the shape still pending, then look again.
+    engine.secondaryColor = .blue
+    let after = Layer(width: 30, height: 30, name: "after")
+    engine.drawOverlay(in: after.context, scale: 1)
+    check((PixelOps.sample(after, x: 15, y: 15)?.b ?? 0) > 200, "the preview took the new colour")
+    check(Int(PixelOps.sample(after, x: 15, y: 15)?.g ?? 255) < 60, "and dropped the old one")
+
+    // Committing uses that same colour, not the one the shape started with.
+    check(engine.commitSession(), "the shape commits")
+    check((pixel(doc, 15, 15)?.b ?? 0) > 200, "and lands in the colour showing at the time")
+}
+
+section("a pending line follows the current color")
+do {
+    let doc = Document(width: 30, height: 30, background: .white)
+    let settings = ToolSettings()
+    settings.tool = .line
+    settings.brushWidth = 6
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .red
+
+    engine.mouseDown(at: CGPoint(x: 4, y: 15), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 26, y: 15), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 26, y: 15), modifiers: [])
+    check(engine.session != nil, "the line is still live")
+
+    engine.primaryColor = .blue
+    check(engine.commitSession(), "the line commits")
+    check((pixel(doc, 15, 15)?.b ?? 0) > 200, "in the colour set while it was pending")
+    check(Int(pixel(doc, 15, 15)?.r ?? 255) < 60, "not the one it was drawn with")
+}
+
+section("the text overlay recolors what is already typed")
+do {
+    // The colour lives on the text storage as well as the view, so recoloring
+    // has to touch both or text already typed keeps the old one.
+    let overlay = TextBoxOverlay(frame: NSRect(x: 0, y: 0, width: 80, height: 24),
+                                 font: .systemFont(ofSize: 12), color: .red)
+    overlay.textView.string = "hi"
+    check(overlay.textView.textColor == NSColor.red, "it starts in the colour it was made with")
+
+    overlay.setColor(.blue)
+    check(overlay.textView.textColor == NSColor.blue, "the view took the new colour")
+    let painted = overlay.textView.textStorage?
+        .attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+    check(painted == NSColor.blue, "and so did the text already typed")
+}
+
 print(failures == 0
       ? "\nAll \(checks) checks passed."
       : "\n\(failures) of \(checks) checks failed.")

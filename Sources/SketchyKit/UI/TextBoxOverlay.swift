@@ -54,6 +54,18 @@ final class TextBoxOverlay: NSView, NSTextViewDelegate {
         textView.font = NSFontManager.shared.convert(baseFont, toSize: size)
     }
 
+    /// Recolors the text being typed, so a color picked mid-edit shows up in
+    /// the box rather than only once the text is painted.
+    func setColor(_ color: NSColor) {
+        guard textView.textColor != color else { return }
+        textView.textColor = color
+        // Text already typed keeps the old color otherwise: the attribute is
+        // on the storage, not the view.
+        let all = NSRange(location: 0, length: textView.string.utf16.count)
+        textView.textStorage?.addAttribute(.foregroundColor, value: color, range: all)
+        textView.needsDisplay = true
+    }
+
     func setBaseFont(_ font: NSFont, zoom: CGFloat) {
         baseFont = font
         apply(zoom: zoom)
