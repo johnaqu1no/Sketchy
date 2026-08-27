@@ -3588,6 +3588,35 @@ windowSection("an oversized paste asks before it clips") {
     sourceController.window?.close()
 }
 
+windowSection("the canvas holds keyboard focus from launch") {
+    let doc = Document(width: 40, height: 40, background: .white)
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: doc, hub: hub)
+    controller.showWindow(nil)
+    controller.window?.makeKeyAndOrderFront(nil)
+
+    // A text field in the options bar used to be first responder here, which
+    // meant the field editor took ⌘V and the first paste of a session went
+    // into the brush-size box.
+    var chain: [NSResponder] = []
+    var responder: NSResponder? = controller.window?.firstResponder
+    while let current = responder {
+        chain.append(current)
+        responder = current.nextResponder
+    }
+    check(chain.first is CanvasView, "the canvas is first responder — got \(chain.map { type(of: $0) })")
+    check(!chain.contains { $0 is NSTextView }, "no field editor sits in front of it")
+    check(chain.contains { $0.responds(to: #selector(MainWindowController.paste(_:))) },
+          "and the chain reaches something that pastes")
+
+    // Switching tools rebuilds the options bar, which must not take it back.
+    controller.selectTool(.paintbrush)
+    controller.selectTool(.text)
+    controller.selectTool(.paintbrush)
+    check(controller.window?.firstResponder is CanvasView, "a tool change leaves focus on the canvas")
+    controller.window?.close()
+}
+
 print(failures == 0
       ? "\nAll \(checks) checks passed."
       : "\n\(failures) of \(checks) checks failed.")

@@ -98,6 +98,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         statusBar.setDocumentSize(doc.size)
         statusBar.setZoom(canvas.zoom)
 
+        // Keyboard focus belongs to the canvas from the start. A text field in
+        // the options bar would otherwise be first responder at launch and
+        // take ⌘V for itself, so the first paste of a session went into the
+        // brush-size box instead of the image.
+        window.initialFirstResponder = canvas
+        focusCanvas()
+
         // The canvas can only size itself once it is inside the scroll view.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -113,6 +120,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
             statusBar.flash(message, thenHintFor: settings.tool)
             canvas.needsDisplay = true
         }
+    }
+
+    /// Puts keyboard focus back on the canvas, unless something is genuinely
+    /// being typed into: the text tool's overlay, or a field the user clicked.
+    func focusCanvas() {
+        guard let window, let canvas else { return }
+        guard textOverlay == nil else { return }
+        if let responder = window.firstResponder as? NSView,
+           responder === canvas || responder.isDescendant(of: canvas) { return }
+        window.makeFirstResponder(canvas)
     }
 
     @objc private func contentFrameChanged() {
@@ -197,6 +214,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         settings.tool = tool
         toolsPanel.select(tool)
         optionsBar.rebuild()
+        // The rebuilt bar may have handed focus to one of its own fields.
+        focusCanvas()
         statusBar.setHint(for: tool)
         canvas.window?.invalidateCursorRects(for: canvas)
         canvas.needsDisplay = true
