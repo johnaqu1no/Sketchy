@@ -460,6 +460,78 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
+    /// Exports a flattened copy sized to land inside a range of file sizes.
+    /// Nothing about the document changes: the search runs on a composite of
+    /// it, and what it settles on is written straight out.
+    @objc func exportForFileSize(_ sender: Any?) {
+        commitPendingEdits()
+        refreshPanels()
+        guard let window else { return }
+        Dialogs.fileSizeSheet(format: settings.exportFormat,
+                              minKB: settings.exportMinKB,
+                              maxKB: settings.exportMaxKB,
+                              method: settings.exportMethod,
+                              resampling: settings.exportResampling,
+                              in: window) { [weak self] choice in
+            guard let self, let choice else { return }
+            settings.exportFormat = choice.format
+            settings.exportMinKB = Double(choice.range.minBytes) / 1024
+            settings.exportMaxKB = Double(choice.range.maxBytes) / 1024
+            settings.exportMethod = choice.method
+            settings.exportResampling = choice.resampling
+            runFileSizeExport(choice)
+        }
+    }
+
+    /// The search itself, and what to do with what it found. A miss is offered
+    /// rather than thrown away: the closest the format can get is usually
+    /// still the file the user wanted, and only they know whether it will do.
+    private func runFileSizeExport(_ choice: Dialogs.FileSizeChoice) {
+        guard let image = doc.composite() else {
+            NSAlert(error: DocumentError.encodeFailed).runModal()
+            return
+        }
+        statusBar.flash("Searching for a fit…", thenHintFor: settings.tool)
+        guard let fit = FileSizeExport.fit(image,
+                                           format: choice.format,
+                                           range: choice.range,
+                                           method: choice.method,
+                                           resampling: choice.resampling,
+                                           allowsEnlarging: choice.allowsEnlarging) else {
+            NSAlert(error: DocumentError.encodeFailed).runModal()
+            return
+        }
+
+        if !fit.isInRange {
+            let alert = NSAlert()
+            alert.messageText = "That range could not be hit exactly."
+            let direction = fit.missedLow
+                ? "the largest \(choice.format.rawValue) this image makes is"
+                : "the smallest \(choice.format.rawValue) this image makes is"
+            alert.informativeText = "At \(Int(fit.pixelSize.width))×\(Int(fit.pixelSize.height)), "
+                + "\(direction) \(fit.sizeDescription). Export it anyway?"
+            alert.addButton(withTitle: "Export Anyway")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [choice.format.contentType]
+        panel.nameFieldStringValue = doc.displayName + "." + choice.format.fileExtension
+        panel.message = "\(fit.sizeDescription) at \(Int(fit.pixelSize.width))×"
+            + "\(Int(fit.pixelSize.height)), found in \(fit.attempts) encodes."
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            do {
+                try fit.data.write(to: url)
+                statusBar.flash("Exported \(url.lastPathComponent) — \(fit.sizeDescription)",
+                                thenHintFor: settings.tool)
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
     /// Checks a proposed canvas size before anything is allocated. Returns
     /// false when the size is refused, or when the user backs out of a size
     /// big enough to be worth a warning.

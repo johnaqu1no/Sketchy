@@ -238,11 +238,37 @@ enum GradientKind: String, CaseIterable {
 enum Resampling: String, CaseIterable {
     /// Nearest neighbour: every source pixel stays a hard-edged block.
     case pixels = "Pixels"
-    /// Smooth interpolation, better for photographs.
+    /// Straight four-tap interpolation. Softer than nearest neighbour without
+    /// the ringing a wider kernel can leave on hard edges.
+    case bilinear = "Bilinear"
+    /// Core Graphics' best interpolation, the general-purpose choice for
+    /// photographs.
     case smooth = "Smooth"
+    /// Windowed-sinc resampling. The sharpest enlargement of the set, at the
+    /// cost of a little overshoot either side of a hard edge.
+    case lanczos = "Lanczos"
+    /// Every destination pixel is the average of the source pixels it covers.
+    /// Nothing is skipped, so a big reduction keeps detail an interpolating
+    /// filter drops; on an enlargement it falls back to smooth.
+    case boxAverage = "Box Average"
 
+    /// What Core Graphics is asked for when the draw goes through it. The
+    /// kernels it has no setting for still name their closest neighbour, since
+    /// that is what a fallback draw should use.
     var quality: CGInterpolationQuality {
-        self == .pixels ? .none : .high
+        switch self {
+        case .pixels:     return .none
+        case .bilinear:   return .low
+        case .smooth:     return .high
+        case .lanczos:    return .high
+        case .boxAverage: return .medium
+        }
+    }
+
+    /// True for the kernels Sketchy resamples itself, which have to run over
+    /// the image before it is drawn rather than during the draw.
+    var isCustomKernel: Bool {
+        self == .lanczos || self == .boxAverage
     }
 }
 
@@ -289,6 +315,13 @@ final class ToolSettings {
     /// hard edges unless the user asks for smoothing.
     var resampling: Resampling = .pixels
     var fillGlobally: Bool = false
+    /// The last target-file-size export, so a second run of it opens on what
+    /// the first one asked for rather than the defaults.
+    var exportFormat: FileSizeExport.Format = .jpeg
+    var exportMinKB: Double = 0
+    var exportMaxKB: Double = 500
+    var exportMethod: FileSizeExport.Method = .qualityThenDimensions
+    var exportResampling: Resampling = .smooth
     /// Which color the recolor brush replaces.
     var recolorTarget: RecolorTarget = .secondaryColor
 

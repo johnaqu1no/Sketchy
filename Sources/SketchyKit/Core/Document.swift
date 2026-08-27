@@ -608,10 +608,7 @@ final class Document {
             if let img = old.image {
                 // Resampling is a choice about this one draw, not a setting the
                 // layer keeps for whatever a tool paints next.
-                l.context.saveGState()
-                l.context.interpolationQuality = resampling.quality
-                l.context.draw(img, in: target)
-                l.context.restoreGState()
+                resampling.draw(img, in: target, into: l.context)
             }
             return l
         }
@@ -754,10 +751,14 @@ final class Document {
         // there would soften every edge for nothing. A scale that resizes them
         // has to resample, and takes the setting for it.
         let unscaled = destination.size == size
-        layer.rawContext.saveGState()
-        layer.rawContext.interpolationQuality = unscaled ? .none : resampling.quality
-        layer.rawContext.draw(image, in: destination)
-        layer.rawContext.restoreGState()
+        if unscaled {
+            layer.rawContext.saveGState()
+            layer.rawContext.interpolationQuality = .none
+            layer.rawContext.draw(image, in: destination)
+            layer.rawContext.restoreGState()
+        } else {
+            resampling.draw(image, in: destination, into: layer.rawContext)
+        }
         // Anything hanging off the edge was clipped away, so the selection is
         // only over pixels that actually landed.
         let landed = destination.intersection(bounds)

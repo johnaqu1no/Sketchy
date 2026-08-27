@@ -66,10 +66,11 @@ enum Dialogs {
 
         let sampleLabel = NSTextField(labelWithString: "Scaling:")
         sampleLabel.frame = NSRect(x: 0, y: top - 88, width: 60, height: 20)
-        let samplePopup = NSPopUpButton(frame: NSRect(x: 64, y: top - 90, width: 120, height: 24))
+        let samplePopup = NSPopUpButton(frame: NSRect(x: 64, y: top - 90, width: 128, height: 24))
         samplePopup.addItems(withTitles: Resampling.allCases.map(\.rawValue))
         samplePopup.selectItem(withTitle: (resampling ?? .pixels).rawValue)
-        samplePopup.toolTip = "Pixels keeps hard edges, for pixel art. Smooth interpolates."
+        samplePopup.toolTip = "Pixels keeps hard edges, for pixel art. Bilinear and Smooth "
+            + "interpolate, Lanczos sharpens an enlargement, and Box Average is the one to shrink with."
 
         var controls: [NSView] = [widthLabel, widthField, heightLabel, heightField, ratio]
         if showsAnchor { controls += [anchorTitle, grid] }
@@ -86,6 +87,92 @@ enum Dialogs {
                                   keepsProportions: ratio.state == .on,
                                   resampling: Resampling(rawValue: samplePopup.titleOfSelectedItem ?? "")
                                       ?? .pixels))
+        }
+    }
+
+    /// What the user chose in the target-file-size sheet.
+    struct FileSizeChoice {
+        let format: FileSizeExport.Format
+        let range: FileSizeExport.Range
+        let method: FileSizeExport.Method
+        let resampling: Resampling
+        let allowsEnlarging: Bool
+    }
+
+    /// Collects a range of file sizes to hit, and how the search is allowed to
+    /// hit it. Sizes are in kilobytes, which is the unit an upload limit is
+    /// usually quoted in.
+    static func fileSizeSheet(format: FileSizeExport.Format,
+                              minKB: Double,
+                              maxKB: Double,
+                              method: FileSizeExport.Method,
+                              resampling: Resampling,
+                              in window: NSWindow,
+                              completion: @escaping (FileSizeChoice?) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Export to a File Size"
+        alert.informativeText = "Sketchy encodes the flattened image over and over, trading quality "
+            + "and pixels, until the file lands between these two sizes."
+        alert.addButton(withTitle: "Export…")
+        alert.addButton(withTitle: "Cancel")
+
+        let row: CGFloat = 28
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: row * 5))
+        func label(_ text: String, row index: Int) -> NSTextField {
+            let field = NSTextField(labelWithString: text)
+            field.frame = NSRect(x: 0, y: container.frame.height - row * CGFloat(index + 1) + 4,
+                                 width: 92, height: 18)
+            return field
+        }
+        func y(_ index: Int) -> CGFloat { container.frame.height - row * CGFloat(index + 1) }
+
+        let formatPopup = NSPopUpButton(frame: NSRect(x: 96, y: y(0), width: 110, height: 24))
+        formatPopup.addItems(withTitles: FileSizeExport.Format.allCases.map(\.rawValue))
+        formatPopup.selectItem(withTitle: format.rawValue)
+        formatPopup.toolTip = "PNG and TIFF have no quality to trade, so only their dimensions can move."
+
+        let minField = NSTextField(string: String(format: "%g", minKB))
+        minField.frame = NSRect(x: 96, y: y(1) + 1, width: 76, height: 22)
+        let toLabel = NSTextField(labelWithString: "to")
+        toLabel.frame = NSRect(x: 178, y: y(1) + 4, width: 20, height: 18)
+        let maxField = NSTextField(string: String(format: "%g", maxKB))
+        maxField.frame = NSRect(x: 200, y: y(1) + 1, width: 76, height: 22)
+        let unit = NSTextField(labelWithString: "KB")
+        unit.frame = NSRect(x: 282, y: y(1) + 4, width: 30, height: 18)
+        unit.textColor = .secondaryLabelColor
+
+        let methodPopup = NSPopUpButton(frame: NSRect(x: 96, y: y(2), width: 220, height: 24))
+        methodPopup.addItems(withTitles: FileSizeExport.Method.allCases.map(\.rawValue))
+        methodPopup.selectItem(withTitle: method.rawValue)
+
+        let samplePopup = NSPopUpButton(frame: NSRect(x: 96, y: y(3), width: 150, height: 24))
+        samplePopup.addItems(withTitles: Resampling.allCases.map(\.rawValue))
+        samplePopup.selectItem(withTitle: resampling.rawValue)
+        samplePopup.toolTip = "How the image is scaled when the search has to shed pixels."
+
+        let enlarge = NSButton(checkboxWithTitle: "Allow enlarging to reach the minimum",
+                               target: nil, action: nil)
+        enlarge.frame = NSRect(x: 96, y: y(4), width: 280, height: 20)
+
+        let controls: [NSView] = [label("Format:", row: 0), formatPopup,
+                                  label("Target size:", row: 1), minField, toLabel, maxField, unit,
+                                  label("Method:", row: 2), methodPopup,
+                                  label("Scaling:", row: 3), samplePopup,
+                                  enlarge]
+        controls.forEach { container.addSubview($0) }
+        alert.accessoryView = container
+
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { completion(nil); return }
+            let low = max(0, minField.doubleValue)
+            let high = max(low, maxField.doubleValue)
+            completion(FileSizeChoice(
+                format: FileSizeExport.Format(rawValue: formatPopup.titleOfSelectedItem ?? "") ?? .jpeg,
+                range: FileSizeExport.Range(minKB: low, maxKB: max(1, high)),
+                method: FileSizeExport.Method(rawValue: methodPopup.titleOfSelectedItem ?? "")
+                    ?? .qualityThenDimensions,
+                resampling: Resampling(rawValue: samplePopup.titleOfSelectedItem ?? "") ?? .smooth,
+                allowsEnlarging: enlarge.state == .on))
         }
     }
 

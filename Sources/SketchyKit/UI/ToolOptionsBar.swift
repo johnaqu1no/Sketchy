@@ -175,7 +175,7 @@ final class ToolOptionsBar: NSView {
             stack.addArrangedSubview(label("Scaling:"))
             stack.addArrangedSubview(popup(Resampling.allCases.map(\.rawValue),
                                            selected: settings.resampling.rawValue,
-                                           width: 110, action: #selector(resamplingChanged(_:))))
+                                           width: 130, action: #selector(resamplingChanged(_:))))
         case .colorPicker:
             let sampling = popup(["Layer", "Image"], selected: settings.sampleMerged ? "Image" : "Layer",
                                  width: 100, action: #selector(samplingChanged(_:)))

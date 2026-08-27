@@ -38,8 +38,10 @@ back into view without losing what hung over the edge. They carry resize
 handles, and dragging one past its anchor mirrors them.
 
 **Pixels stay pixels.** Scaling defaults to nearest neighbour, so pixel art
-keeps hard edges; switch to Smooth for photographs. The status bar reads out
-the size of whatever you are selecting, moving or drawing.
+keeps hard edges. Four other kernels sit beside it: Bilinear, Smooth, Lanczos
+for a sharp enlargement, and Box Average, which averages every source pixel a
+destination pixel covers and so holds detail through a big reduction. The
+status bar reads out the size of whatever you are selecting, moving or drawing.
 
 **Palettes.** Tools, Colors, History and Layers float over the window or dock
 into either side of it, collapse to their headers, and reflow as the rail
@@ -49,6 +51,14 @@ active tab. The layout is remembered between launches.
 **Files.** `.sketchy` is the native format: a binary property list holding the
 layer stack with each layer's pixels as PNG. PNG, JPEG, TIFF, BMP, GIF, HEIC
 and WebP are read and written, flattened on the way out.
+
+**Exporting to a file size.** File ▸ Export to a File Size takes a range in
+kilobytes rather than a quality slider, and encodes the flattened image
+repeatedly — trading quality, then pixels — until the file lands inside it.
+Choose which dial it is allowed to turn, and which kernel it scales with; PNG
+and TIFF have no quality to give, so they are fitted by dimensions alone. A
+range the format cannot reach is reported with the closest it managed, to take
+or leave.
 
 ## Issues
 

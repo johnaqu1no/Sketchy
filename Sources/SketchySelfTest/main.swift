@@ -3335,6 +3335,201 @@ windowSection("switching layers leaves lifted pixels where they came from") {
     controller.window?.close()
 }
 
+// MARK: - Resampling kernels
+
+section("box average sees every source pixel")
+do {
+    // A 4x4 split down the middle, black on the left, white on the right.
+    let doc = Document(width: 4, height: 4)
+    let layer = doc.layers[0]
+    layer.context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+    layer.context.fill(CGRect(x: 0, y: 0, width: 2, height: 4))
+    layer.context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+    layer.context.fill(CGRect(x: 2, y: 0, width: 2, height: 4))
+    layer.markEdited()
+
+    guard let img = doc.composite() else { check(false, "the 4x4 composited"); exit(1) }
+    let halved = Resampler.scaled(img, to: CGSize(width: 2, height: 2), using: .boxAverage)
+    check(halved != nil, "box average produced an image")
+    if let halved {
+        equal(halved.width, 2, "at the width asked for")
+        equal(halved.height, 2, "and the height")
+        let probe = Layer(width: 2, height: 2, name: "probe")
+        probe.draw(image: halved)
+        // Each destination pixel covers two source pixels of one colour, so
+        // the halves stay pure rather than blurring into each other.
+        equal(PixelOps.sample(probe, x: 0, y: 0)?.r ?? 99, 0, "the black half stayed black")
+        equal(PixelOps.sample(probe, x: 1, y: 0)?.r ?? 0, 255, "and the white half white")
+    }
+
+    // A quarter-size reduction straddles the divide, so the middle averages.
+    let quarter = Resampler.scaled(img, to: CGSize(width: 1, height: 1), using: .boxAverage)
+    if let quarter {
+        let probe = Layer(width: 1, height: 1, name: "probe")
+        probe.draw(image: quarter)
+        let grey = Int(PixelOps.sample(probe, x: 0, y: 0)?.r ?? 0)
+        check(grey > 100 && grey < 155, "half black and half white average to grey — got \(grey)")
+    } else {
+        check(false, "the 1x1 reduction produced an image")
+    }
+
+    // Enlarging has nothing to average, so it hands the draw back.
+    check(Resampler.scaled(img, to: CGSize(width: 8, height: 8), using: .boxAverage) == nil,
+          "box average declines an enlargement")
+}
+
+section("lanczos scales to the size asked for")
+do {
+    let doc = Document(width: 8, height: 8)
+    doc.layers[0].context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+    doc.layers[0].context.fill(CGRect(x: 0, y: 0, width: 4, height: 8))
+    doc.layers[0].markEdited()
+    guard let img = doc.composite() else { check(false, "the 8x8 composited"); exit(1) }
+
+    let bigger = Resampler.scaled(img, to: CGSize(width: 20, height: 12), using: .lanczos)
+    check(bigger != nil, "lanczos produced an image")
+    if let bigger {
+        equal(bigger.width, 20, "at the width asked for")
+        equal(bigger.height, 12, "and the height, non-proportional included")
+    }
+    // Same size in, same image out: nothing to resample.
+    check(Resampler.scaled(img, to: CGSize(width: 8, height: 8), using: .lanczos)?.width == 8,
+          "and an unchanged size is a no-op")
+}
+
+section("every kernel resizes a document")
+do {
+    for kernel in Resampling.allCases {
+        let doc = Document(width: 32, height: 32)
+        doc.layers[0].context.setFillColor(CGColor(red: 0, green: 0.5, blue: 1, alpha: 1))
+        doc.layers[0].context.fill(CGRect(x: 0, y: 0, width: 32, height: 16))
+        doc.layers[0].markEdited()
+        doc.resizeImage(to: CGSize(width: 16, height: 16), resampling: kernel)
+        equal(doc.width, 16, "\(kernel.rawValue) resized the width")
+        equal(doc.height, 16, "\(kernel.rawValue) resized the height")
+        check((pixel(doc, 8, 4)?.b ?? 0) > 128, "\(kernel.rawValue) kept the filled half")
+        // The draw must not leave its kernel behind on the layer's context.
+        equal(doc.layers[0].context.interpolationQuality, .high,
+              "\(kernel.rawValue) restored the context's own setting")
+    }
+}
+
+// MARK: - Targeting a file size
+
+/// A gradient with noise in it: something a JPEG encoder cannot flatten to
+/// nothing, so the search has a real size curve to bisect.
+func busyImage(width: Int = 256, height: Int = 256) -> CGImage {
+    let doc = Document(width: width, height: height)
+    let ctx = doc.layers[0].context
+    var seed: UInt64 = 0x9E3779B97F4A7C15
+    for y in stride(from: 0, to: height, by: 2) {
+        for x in stride(from: 0, to: width, by: 2) {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            let n = CGFloat((seed >> 33) % 256) / 255
+            ctx.setFillColor(CGColor(red: CGFloat(x) / CGFloat(width), green: n,
+                                     blue: CGFloat(y) / CGFloat(height), alpha: 1))
+            ctx.fill(CGRect(x: x, y: y, width: 2, height: 2))
+        }
+    }
+    doc.layers[0].markEdited()
+    return doc.composite()!
+}
+
+section("the size dial only ever grows the file")
+do {
+    let image = busyImage(width: 128, height: 128)
+    for method in FileSizeExport.Method.allCases {
+        var last = 0
+        var grew = true
+        for step in 0...8 {
+            let dial = FileSizeExport.settings(at: Double(step) / 8, image: image,
+                                               format: .jpeg, method: method,
+                                               allowsEnlarging: false)
+            guard let scaled = FileSizeExport.render(image, to: dial.size, using: .smooth),
+                  let data = FileSizeExport.encode(scaled, format: .jpeg, quality: dial.quality) else {
+                check(false, "\(method.rawValue) encoded at step \(step)")
+                break
+            }
+            // Bisection is only valid while the curve climbs, so this is the
+            // property the whole search rests on.
+            if data.count < last { grew = false }
+            last = data.count
+        }
+        check(grew, "\(method.rawValue) grows monotonically along the dial")
+    }
+    // Nothing is enlarged unless it was asked for.
+    let top = FileSizeExport.settings(at: 1, image: image, format: .jpeg,
+                                      method: .qualityThenDimensions, allowsEnlarging: false)
+    equal(Int(top.size.width), 128, "the dial stops at the original width")
+}
+
+section("a jpeg is fitted into a range")
+do {
+    let image = busyImage()
+    let range = FileSizeExport.Range(minKB: 8, maxKB: 16)
+    guard let fit = FileSizeExport.fit(image, format: .jpeg, range: range,
+                                       method: .qualityThenDimensions) else {
+        check(false, "the search returned a result"); exit(1)
+    }
+    check(fit.isInRange, "the fit landed in the range — got \(fit.byteCount) bytes")
+    check(fit.byteCount <= range.maxBytes, "and never above the ceiling")
+    check(fit.byteCount >= range.minBytes, "nor below the floor")
+    check(fit.quality != nil, "a lossy format reports the quality it used")
+    check(fit.attempts > 1, "the search actually searched")
+    check(!fit.data.isEmpty, "and produced bytes to write")
+}
+
+section("an impossible ceiling reports the closest miss")
+do {
+    let image = busyImage()
+    // Far below what 256x256 of noise can be squeezed into.
+    let fit = FileSizeExport.fit(image, format: .jpeg,
+                                 range: FileSizeExport.Range(minBytes: 0, maxBytes: 64),
+                                 method: .quality)
+    check(fit != nil, "the search still returned something")
+    if let fit {
+        check(!fit.isInRange, "and admits it missed")
+        check(!fit.missedLow, "in the direction of being too big")
+        check(!fit.data.isEmpty, "with the nearest encoding to offer anyway")
+    }
+}
+
+section("an impossible floor is reported as too small")
+do {
+    let image = busyImage(width: 64, height: 64)
+    let fit = FileSizeExport.fit(image, format: .jpeg,
+                                 range: FileSizeExport.Range(minKB: 4096, maxKB: 8192),
+                                 method: .quality)
+    check(fit?.isInRange == false, "the floor was out of reach")
+    check(fit?.missedLow == true, "and the miss is marked as low")
+}
+
+section("a lossless format is fitted by dimensions alone")
+do {
+    let image = busyImage()
+    // A ceiling well under what the full-size PNG weighs, so the only way to
+    // meet it is to shed pixels.
+    guard let fit = FileSizeExport.fit(image, format: .png,
+                                       range: FileSizeExport.Range(minKB: 0, maxKB: 12),
+                                       method: .quality, resampling: .boxAverage) else {
+        check(false, "the png search returned a result"); exit(1)
+    }
+    check(fit.quality == nil, "png reports no quality")
+    check(fit.byteCount <= 12 * 1024, "and still respects the ceiling")
+    check(Int(fit.pixelSize.width) < 256, "the only dial it had was the pixel count")
+}
+
+section("enlarging is opt-in")
+do {
+    let image = busyImage(width: 64, height: 64)
+    let small = FileSizeExport.settings(at: 1, image: image, format: .png,
+                                        method: .dimensions, allowsEnlarging: false)
+    equal(Int(small.size.width), 64, "off, the search stops at the original size")
+    let big = FileSizeExport.settings(at: 1, image: image, format: .png,
+                                      method: .dimensions, allowsEnlarging: true)
+    check(Int(big.size.width) > 64, "on, it may go past it to reach a floor")
+}
+
 print(failures == 0
       ? "\nAll \(checks) checks passed."
       : "\n\(failures) of \(checks) checks failed.")
