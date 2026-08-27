@@ -734,16 +734,23 @@ final class Document {
     /// lands in the top-left corner, or at the top-left of the current
     /// selection when there is one; the canvas-relative scales ignore both.
     /// `resampling` only matters to a scale that resizes the pixels.
+    /// Where an actual-size paste lands when nothing says otherwise: the
+    /// top-left of the selection if there is one, and the top-left of the
+    /// canvas if there is not.
+    func pasteCorner(for size: CGSize) -> CGPoint {
+        guard let box = selectionPath?.boundingBoxOfPath else {
+            return CGPoint(x: 0, y: CGFloat(height) - size.height)
+        }
+        return CGPoint(x: box.minX, y: box.maxY - size.height)
+    }
+
     @discardableResult
     func paste(_ image: CGImage, at origin: CGPoint? = nil,
                scale: PasteScale = .actualSize,
                resampling: Resampling = .smooth) -> CGRect? {
         guard let layer = selectedRasterLayer else { return nil }
         let size = CGSize(width: image.width, height: image.height)
-        let corner = origin
-            ?? selectionPath?.boundingBoxOfPath.origin.applying(
-                CGAffineTransform(translationX: 0, y: (selectionPath?.boundingBoxOfPath.height ?? 0) - size.height))
-            ?? CGPoint(x: 0, y: CGFloat(height) - size.height)
+        let corner = origin ?? pasteCorner(for: size)
 
         let destination = scale.destination(imageSize: size, canvas: self.size, corner: corner)
         layer.markEdited(destination)

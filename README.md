@@ -32,8 +32,9 @@ magic wand traces the boundary of what it matched, so the marching ants outline
 the region rather than hatching it. Move Selection drags and resizes the
 outline; Move Selected Pixels lifts the pixels themselves.
 
-**Floating pixels.** Pasted or lifted pixels hover above the canvas at full
-size until you commit them, so an image wider than the canvas can be dragged
+**Floating pixels.** A paste larger than the canvas asks first: expand the
+canvas to hold it, or keep the canvas and let the paste float. Floating pixels
+hover above the canvas at full size until you commit them, so an image wider than the canvas can be dragged
 back into view without losing what hung over the edge. They carry resize
 handles, and dragging one past its anchor mirrors them.
 

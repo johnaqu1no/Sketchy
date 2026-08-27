@@ -2087,6 +2087,9 @@ windowSection("a paste shows up in the palette") {
 
     let hub = PaletteHub()
     let controller = MainWindowController(doc: doc, hub: hub)
+    // Whatever the pasteboard is carrying may be bigger than this canvas, and
+    // a modal has nobody to click it in a test run.
+    controller.oversizePastePolicy = .keep
     let panel = hub.layersPanel
     let thumbSize = NSSize(width: 34, height: 34)
     let before = doc.layers[0].thumbnail(size: thumbSize)
@@ -3528,6 +3531,61 @@ do {
     let big = FileSizeExport.settings(at: 1, image: image, format: .png,
                                       method: .dimensions, allowsEnlarging: true)
     check(Int(big.size.width) > 64, "on, it may go past it to reach a floor")
+}
+
+windowSection("an oversized paste asks before it clips") {
+    // A clip wider and taller than the canvas it is going onto.
+    let source = Document(width: 40, height: 30, background: .red)
+    let sourceHub = PaletteHub()
+    let sourceController = MainWindowController(doc: source, hub: sourceHub)
+    sourceController.selectAll(nil)
+    sourceController.copy(nil)
+
+    func target() -> (Document, MainWindowController) {
+        let doc = Document(width: 20, height: 20, background: .white)
+        return (doc, MainWindowController(doc: doc, hub: PaletteHub()))
+    }
+
+    // Expanding grows the canvas to hold every pasted pixel.
+    let (grown, expandController) = target()
+    expandController.oversizePastePolicy = .expand
+    expandController.paste(nil)
+    expandController.commitPendingEdits()
+    equal(grown.width, 40, "the canvas grew to the pasted width")
+    equal(grown.height, 30, "and to its height")
+    check((pixel(grown, 5, 5)?.r ?? 0) > 200, "with the paste landed in it")
+    expandController.window?.close()
+
+    // Keeping the canvas leaves the paste floating at full size instead.
+    let (kept, keepController) = target()
+    keepController.oversizePastePolicy = .keep
+    keepController.paste(nil)
+    equal(kept.width, 20, "keeping the canvas left the width alone")
+    check(keepController.engine.hasFloatingPixels, "and the paste is floating over it")
+    equal(keepController.engine.floatingRect.width, 40, "at its own full width")
+    check(keepController.engine.commitFloatingPixels(), "which lands when committed")
+    keepController.window?.close()
+
+    // Cancelling does nothing at all.
+    let (untouched, cancelController) = target()
+    cancelController.oversizePastePolicy = .cancel
+    let steps = untouched.history.entries.count
+    cancelController.paste(nil)
+    equal(untouched.history.entries.count, steps, "cancelling left the history alone")
+    check(!cancelController.engine.hasFloatingPixels, "and nothing floating")
+    equal(untouched.width, 20, "and the canvas as it was")
+    cancelController.window?.close()
+
+    // A paste that fits is never asked about: the scaled pastes are about the
+    // canvas already, and a small clip has nothing to lose.
+    let (fitted, fitController) = target()
+    fitController.oversizePastePolicy = .cancel
+    fitController.pasteFitToCanvas(nil)
+    fitController.commitPendingEdits()
+    check(fitted.history.entries.count > 1, "a fit-to-canvas paste went straight through")
+    fitController.window?.close()
+
+    sourceController.window?.close()
 }
 
 print(failures == 0

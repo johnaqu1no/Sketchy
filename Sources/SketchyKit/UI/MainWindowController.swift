@@ -634,17 +634,71 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     /// Scales the paste to the canvas without distorting it, centred.
     @objc func pasteFitToCanvas(_ sender: Any?) { paste(scale: .fitToCanvas) }
 
-    /// The pixels go into the layer as they are: a paste is an edit, not a
-    /// question, so nothing is asked and nothing has to be dropped after.
-    /// Anything past the canvas edge is clipped away, and the pasted region
-    /// becomes the selection so it can be moved straight away.
+    /// What to do about a paste that does not fit on the canvas.
+    enum OversizePaste { case expand, keep, cancel }
+
+    /// Answers the oversized-paste question without showing the sheet. Left
+    /// nil in the app, where the user answers it; the self-test sets it, since
+    /// a modal has nobody to click it.
+    var oversizePastePolicy: OversizePaste?
+
+    /// The pasted region becomes the selection so it can be moved straight
+    /// away. At actual size an image bigger than the canvas would silently
+    /// lose whatever hung over the edge, so that one case is asked about
+    /// first; the scaled pastes are already about the canvas and never ask.
     private func paste(scale: Document.PasteScale) {
         guard let image = pasteboardImage else { return }
         guard doc.selectedRasterLayer != nil else { return groupWarning() }
         // Whatever was pending is put down first, so the paste is the top step.
         commitPendingEdits()
+
+        if case .actualSize = scale,
+           image.width > doc.width || image.height > doc.height {
+            switch askAboutOversizePaste(image) {
+            case .cancel:
+                return
+            case .expand:
+                let w = max(doc.width, image.width)
+                let h = max(doc.height, image.height)
+                guard approveCanvasSize(width: w, height: h, layers: doc.layers.count) else { return }
+                // Anchored top-left, which is where the paste itself lands, so
+                // the new room appears below and to the right of both.
+                doc.resizeCanvas(to: CGSize(width: w, height: h), anchor: CGPoint(x: 0, y: 1))
+                canvas.resizeToFit()
+            case .keep:
+                // Floating, not drawn: the overhang survives until it is
+                // dragged or resized back into view and committed.
+                let size = CGSize(width: image.width, height: image.height)
+                engine.beginFloatingPaste(image, at: doc.pasteCorner(for: size))
+                refreshPanels()
+                statusBar.flash("Pasted at full size — drag or resize it, then click away to land it",
+                                thenHintFor: settings.tool)
+                return
+            }
+        }
+
         doc.paste(image, scale: scale, resampling: settings.resampling)
         refreshPanels()
+    }
+
+    /// Asks what an oversized paste should do. Expanding is the default: it is
+    /// the only answer that keeps every pixel without further work.
+    private func askAboutOversizePaste(_ image: CGImage) -> OversizePaste {
+        if let oversizePastePolicy { return oversizePastePolicy }
+        let alert = NSAlert()
+        alert.messageText = "The pasted image is larger than the canvas."
+        alert.informativeText = "The image is \(image.width) × \(image.height); "
+            + "the canvas is \(doc.width) × \(doc.height). Expanding grows the canvas to fit it. "
+            + "Keeping the canvas leaves the paste floating at full size, so it can be moved or "
+            + "resized before it lands — anything still over the edge is clipped when it does."
+        alert.addButton(withTitle: "Expand Canvas")
+        alert.addButton(withTitle: "Keep Canvas Size")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:  return .expand
+        case .alertSecondButtonReturn: return .keep
+        default:                       return .cancel
+        }
     }
 
     @objc func pasteIntoNewLayer(_ sender: Any?) {
