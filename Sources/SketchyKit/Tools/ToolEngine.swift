@@ -169,7 +169,7 @@ final class ToolEngine {
 
         // A group is a folder of layers, not a canvas: painting into one would
         // land in a bitmap that never gets drawn.
-        if settings.tool.editsPixels, doc.selectedLayer?.isGroup == true {
+        if settings.tool.editsPixels, doc.selectedRasterLayer == nil {
             onStatus?("That is a group — select a layer inside it to paint")
             isDragging = false
             return
@@ -212,7 +212,7 @@ final class ToolEngine {
         case .smudge, .blurBrush, .sharpenBrush:
             reworkDab(from: p, to: p)
         case .paintBucket:
-            guard let layer = doc.selectedLayer else { break }
+            guard let layer = doc.selectedRasterLayer else { break }
             PixelOps.floodFill(layer: layer,
                                seedX: Int(p.x), seedY: Int(p.y),
                                color: strokeColor,
@@ -545,7 +545,7 @@ final class ToolEngine {
     /// Rasterizes the pending shape onto the layer.
     @discardableResult
     func commitSession() -> Bool {
-        guard let s = session, let layer = doc.selectedLayer else { return false }
+        guard let s = session, let layer = doc.selectedRasterLayer else { return false }
         let path = sessionPath(s)
         let reach = settings.brushWidth + 4
         layer.markEdited(path.boundingBoxOfPath.insetBy(dx: -reach, dy: -reach))
@@ -778,20 +778,25 @@ final class ToolEngine {
     }
 
     private func commitStroke() {
-        guard let scratch = strokeScratch, let layer = doc.selectedLayer,
-              let image = scratch.image else { strokeScratch = nil; return }
+        doc.maskStrokePreview = nil
+        guard strokeScratch != nil, let layer = doc.selectedRasterLayer else { strokeScratch = nil; return }
         layer.markEdited(strokeScratchRect)
-        let ctx = layer.rawContext
+        drawStroke(into: layer.rawContext)
+        strokeScratch = nil
+    }
+
+    /// Lays the stroke so far onto `ctx`, the way it lands on the layer.
+    private func drawStroke(into ctx: CGContext) {
+        guard let image = strokeScratch?.image else { return }
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setBlendMode(settings.blendMode.cgBlendMode)
         ctx.draw(image, in: strokeScratchRect)
         ctx.restoreGState()
-        strokeScratch = nil
     }
 
     private func dab(from a: CGPoint, to b: CGPoint) {
-        guard let layer = doc.selectedLayer else { return }
+        guard let layer = doc.selectedRasterLayer else { return }
         if settings.tool == .paintbrush {
             let reach = settings.brushWidth
             growScratch(toCover: CGRect(x: min(a.x, b.x) - reach, y: min(a.y, b.y) - reach,
@@ -799,6 +804,9 @@ final class ToolEngine {
                                         height: abs(b.y - a.y) + reach * 2))
             guard let scratch = strokeScratch else { return }
             stampStroke(from: a, to: b, into: scratch)
+            if layer.isMask, doc.maskStrokePreview == nil {
+                doc.maskStrokePreview = { [weak self] ctx in self?.drawStroke(into: ctx) }
+            }
             return
         }
         let width = settings.tool == .pencil ? 1 : settings.brushWidth
@@ -842,7 +850,7 @@ final class ToolEngine {
     }
 
     private func recolor(in r: CGRect) {
-        guard let layer = doc.selectedLayer else { return }
+        guard let layer = doc.selectedRasterLayer else { return }
         // A sampled stroke replaces what was under the pointer when it began;
         // otherwise the palette's other color is the one being replaced. Either
         // way the color painted on is the one the button chose.
@@ -869,7 +877,7 @@ final class ToolEngine {
     }
 
     private func cloneDab(at p: CGPoint) {
-        guard let layer = doc.selectedLayer, let delta = cloneDelta, let src = layer.image else { return }
+        guard let layer = doc.selectedRasterLayer, let delta = cloneDelta, let src = layer.image else { return }
         let d = settings.brushWidth
         let ctx = brushContext(layer, region: CGRect(x: p.x - d / 2 - 1, y: p.y - d / 2 - 1,
                                                      width: d + 2, height: d + 2))
@@ -884,7 +892,7 @@ final class ToolEngine {
     /// anchor the user set; spot healing finds the calmest patch nearby for
     /// each dab, so a blemish can be wiped out without picking a source.
     private func healDab(from a: CGPoint, to b: CGPoint) {
-        guard let layer = doc.selectedLayer else { return }
+        guard let layer = doc.selectedRasterLayer else { return }
         let diameter = settings.brushWidth
         let spacing = max(1, diameter * 0.35)
         let distance = hypot(b.x - a.x, b.y - a.y)
@@ -1031,7 +1039,7 @@ final class ToolEngine {
     }
 
     private func drawGradient(from a: CGPoint, to b: CGPoint) {
-        guard let layer = doc.selectedLayer else { return }
+        guard let layer = doc.selectedRasterLayer else { return }
         let start = (usesSecondary ? secondaryColor : primaryColor).srgb
         let end = (usesSecondary ? primaryColor : secondaryColor).srgb
         guard let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
@@ -1603,7 +1611,8 @@ final class ToolEngine {
     }
 
     func drawOverlay(in ctx: CGContext, scale: CGFloat) {
-        if let scratch = strokeScratch, let image = scratch.image {
+        // A stroke on a mask shows through the mask itself, not as paint.
+        if let scratch = strokeScratch, doc.selectedRasterLayer?.isMask != true, let image = scratch.image {
             ctx.saveGState()
             ctx.setBlendMode(settings.blendMode.cgBlendMode)
             doc.clipToSelection(ctx)

@@ -2266,6 +2266,143 @@ windowSection("the layers palette picks several rows and hides them in one step"
     check(doc.isEffectivelyVisible(0), "one outside it can")
 }
 
+section("layer masks")
+do {
+    // A red layer over a white background, so hiding red shows white.
+    let doc = Document(width: 40, height: 40)
+    doc.addLayer(named: "Red")
+    doc.selectedLayer?.fill(with: .red)
+    func red(_ x: Int, _ y: Int) -> Bool {
+        guard let p = pixel(doc, x, y) else { return false }
+        return p.r > 200 && p.g < 60
+    }
+
+    doc.addLayerMask()
+    check(doc.selectedLayer?.mask != nil, "the layer has a mask")
+    check(doc.maskTargeted, "and the mask is what tools paint on")
+    check(doc.selectedRasterLayer?.isMask == true, "the paint target is the mask")
+    check(red(10, 10), "a reveal-all mask hides nothing")
+
+    // Paint black on the left half of the mask with the paintbrush.
+    let settings = ToolSettings()
+    settings.tool = .paintbrush
+    settings.brushWidth = 30
+    settings.hardness = 1
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .black
+    engine.mouseDown(at: CGPoint(x: 5, y: 0), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 5, y: 40), modifiers: [])
+    // Mid-stroke, the mask already shows its effect.
+    check(!red(5, 20), "a stroke in progress on the mask already hides")
+    engine.mouseUp(at: CGPoint(x: 5, y: 40), modifiers: [])
+    check(!red(5, 20), "painting black on the mask hides the layer there")
+    check(red(35, 20), "and leaves the rest showing")
+    check((PixelOps.sample(doc.layers[1], x: 5, y: 20)?.r ?? 0) > 200, "the layer's own pixels are untouched")
+
+    doc.undo()
+    check(red(5, 20), "undo takes the mask stroke back")
+    doc.redo()
+    check(!red(5, 20), "redo paints it again")
+
+    doc.setLayerMaskEnabled(false)
+    check(red(5, 20), "a disabled mask hides nothing")
+    doc.setLayerMaskEnabled(true)
+    check(!red(5, 20), "enabled again it does")
+
+    // Viewing the mask alone is for the canvas only.
+    doc.showsMaskAlone = true
+    let shown = doc.composite(region: doc.bounds, pixelSize: doc.size)
+    let shownLayer = Layer(width: 40, height: 40, name: "probe")
+    shown.map { shownLayer.draw(image: $0) }
+    check((PixelOps.sample(shownLayer, x: 35, y: 20)?.g ?? 0) > 200, "the canvas shows the mask's white")
+    check(red(35, 20), "but an export still shows the layers")
+    doc.showsMaskAlone = false
+
+    // Duplicating carries the mask; crop keeps it lined up.
+    doc.targetMask(false)
+    doc.duplicateSelectedLayer()
+    check(doc.selectedLayer?.mask != nil, "a duplicate has its own mask")
+    check(doc.selectedLayer?.mask !== doc.layers[1].mask, "not the same one")
+    doc.deleteSelectedLayer()
+
+    doc.crop(to: CGRect(x: 0, y: 10, width: 30, height: 20))
+    check(!red(5, 10), "after a crop the hidden part stays hidden")
+    check(red(25, 10), "and the shown part shown")
+    doc.undo()
+    check(doc.layers[1].mask != nil && doc.width == 40, "undoing the crop brings the mask back as it was")
+
+    // Saving keeps masks.
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("mask-test.sketchy")
+    try? doc.writeNative(to: url)
+    if let reopened = try? Document.openNative(url: url) {
+        check(reopened.layers[1].mask != nil, "a saved mask opens again")
+        let p = pixel(reopened, 5, 20)
+        check((p?.r ?? 0) > 200 && (p?.g ?? 0) > 200, "and still hides what it hid")
+    } else {
+        check(false, "the masked document reopens")
+    }
+    try? FileManager.default.removeItem(at: url)
+
+    // Applying bakes the mask into the pixels.
+    doc.selectedLayerIndex = 1
+    doc.removeLayerMask(apply: true)
+    check(doc.layers[1].mask == nil, "apply removes the mask")
+    check(!red(5, 20), "but what it hid stays hidden")
+    equal(PixelOps.sample(doc.layers[1], x: 5, y: 20)?.a ?? 99, 0, "because those pixels are gone")
+    doc.undo()
+    check(doc.layers[1].mask != nil, "undo puts the mask back")
+
+    doc.removeLayerMask(apply: false)
+    check(red(5, 20), "deleting the mask shows everything again")
+}
+
+windowSection("mask thumbnails pick what is painted") {
+    let doc = Document(width: 8, height: 8)
+    doc.addLayer(named: "Top")
+    doc.addLayerMask()
+    let panel = LayersPanel()
+    panel.attach(doc)
+
+    _ = panel.thumbnailClicked(row: 0, mask: false, modifiers: [])
+    check(!doc.maskTargeted, "a click on the layer thumbnail paints the pixels")
+    _ = panel.thumbnailClicked(row: 0, mask: true, modifiers: [])
+    check(doc.maskTargeted, "a click on the mask thumbnail paints the mask")
+
+    check(panel.thumbnailClicked(row: 0, mask: true, modifiers: [.shift]), "⇧ on the mask is used up")
+    check(doc.layers[1].isMaskEnabled == false, "and turns the mask off")
+    _ = panel.thumbnailClicked(row: 0, mask: true, modifiers: [.shift])
+    check(doc.layers[1].isMaskEnabled, "and back on")
+
+    _ = panel.thumbnailClicked(row: 0, mask: true, modifiers: [.option])
+    check(doc.showsMaskAlone, "⌥ shows the mask alone")
+    _ = panel.thumbnailClicked(row: 1, mask: false, modifiers: [])
+    check(!doc.showsMaskAlone && !doc.maskTargeted, "picking another layer goes back to its pixels")
+}
+
+section("a mask made from a selection, and on a group")
+do {
+    let doc = Document(width: 40, height: 40)
+    doc.addLayer(named: "Red")
+    doc.selectedLayer?.fill(with: .red)
+    func red(_ x: Int, _ y: Int) -> Bool {
+        guard let p = pixel(doc, x, y) else { return false }
+        return p.r > 200 && p.g < 60
+    }
+    doc.selectionPath = CGPath(rect: CGRect(x: 0, y: 0, width: 20, height: 40), transform: nil)
+    doc.addLayerMask()
+    check(red(10, 20), "with a selection, the mask shows what is selected")
+    check(!red(30, 20), "and hides the rest")
+
+    let grouped = Document(width: 40, height: 40)
+    grouped.addLayer(named: "Red")
+    grouped.selectedLayer?.fill(with: .red)
+    grouped.groupSelected()
+    grouped.addLayerMask(hideAll: true)
+    let p = pixel(grouped, 10, 10)
+    check((p?.g ?? 0) > 200, "a hide-all mask on a group hides everything in it")
+    check(grouped.selectedRasterLayer?.isMask == true, "and a group's mask can be painted")
+}
+
 section("a floating paste sits in its layer's place")
 do {
     // Bottom layer gets the paste; the layer above it is opaque white, so a

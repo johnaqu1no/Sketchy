@@ -32,6 +32,48 @@ final class Layer {
 
     var isGroup: Bool { kind == .group }
 
+    /// The layer's mask: white shows the layer, black hides it, greys in
+    /// between. Kept as a layer of its own so every tool that paints can paint
+    /// on it, and undo can keep it the way it keeps any other pixels.
+    var mask: Layer?
+    /// A disabled mask is kept but has no effect, for comparing with and
+    /// without it.
+    var isMaskEnabled = true
+    /// Set on the layer that serves as another layer's mask.
+    var isMask = false
+
+    /// A blank mask for this layer: all white, so it hides nothing until
+    /// painted, or all black when it should start hidden.
+    func makeMask(hideAll: Bool = false, id: LayerID? = nil) -> Layer {
+        let m = Layer(width: width, height: height, name: "\(name) mask", id: id)
+        m.isMask = true
+        m.fill(with: hideAll ? .black : .white)
+        return m
+    }
+
+    private var grayMask: (version: Int, image: CGImage)?
+
+    /// A mask's pixels as the grayscale image Core Graphics clips with, kept
+    /// until the mask is painted again.
+    var maskImage: CGImage? {
+        if let cached = grayMask, cached.version == contentVersion { return cached.image }
+        guard let source = image else { return nil }
+        let gray = CGColorSpaceCreateDeviceGray()
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: gray,
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        // Anything erased to transparent reads as black, which hides.
+        ctx.setFillColor(gray: 0, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        ctx.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let result = ctx.makeImage() else { return nil }
+        grayMask = (contentVersion, result)
+        return result
+    }
+
+    /// The mask that applies when compositing, if any.
+    var activeMask: Layer? { isMaskEnabled ? mask : nil }
+
     /// The bitmap, allocated the first time something draws into it. Groups
     /// never touch it, so a folder costs no memory.
     private var storage: CGContext?
@@ -193,11 +235,33 @@ final class Layer {
     func copyLayer(named newName: String? = nil) -> Layer {
         let l = Layer(width: width, height: height, name: newName ?? "\(name) copy",
                       kind: kind, depth: depth)
-        if let img = image { l.draw(image: img) }
+        if !isGroup, let img = image { l.draw(image: img) }
         l.isVisible = isVisible
         l.opacity = opacity
         l.blendMode = blendMode
         l.isCollapsed = isCollapsed
+        l.isMaskEnabled = isMaskEnabled
+        if let mask {
+            let m = l.makeMask()
+            if let img = mask.image { m.restore(from: img) }
+            l.mask = m
+        }
+        return l
+    }
+
+    /// A copy at a new size, with its pixels and its mask's drawn by `draw`,
+    /// for the commands that crop, resize or turn the whole canvas.
+    func reshaped(width: Int, height: Int, _ draw: (CGImage, CGContext) -> Void) -> Layer {
+        let l = emptyCopy(width: width, height: height)
+        if !isGroup, let img = image { draw(img, l.context) }
+        if let mask {
+            let m = Layer(width: width, height: height, name: mask.name)
+            m.isMask = true
+            // Canvas added around the old edge shows, as it did before.
+            m.fill(with: .white)
+            if let img = mask.image { draw(img, m.context) }
+            l.mask = m
+        }
         return l
     }
 
@@ -209,6 +273,7 @@ final class Layer {
         l.opacity = opacity
         l.blendMode = blendMode
         l.isCollapsed = isCollapsed
+        l.isMaskEnabled = isMaskEnabled
         return l
     }
 

@@ -10,7 +10,12 @@ final class Document {
     /// The active layer: the one tools paint on and the panels describe.
     /// Picking a different one drops any others picked alongside it.
     var selectedLayerIndex: Int = 0 {
-        didSet { if selectedLayerIndex != oldValue { extraSelectedIDs = [] } }
+        didSet {
+            guard selectedLayerIndex != oldValue else { return }
+            extraSelectedIDs = []
+            maskTargeted = false
+            showsMaskAlone = false
+        }
     }
     /// Layers picked alongside the active one with ⇧ or ⌘ in the Layers
     /// palette. Commands that make sense on several layers at once (delete,
@@ -44,12 +49,37 @@ final class Document {
         return layers[selectedLayerIndex]
     }
 
-    /// The layer a paint tool may touch. A group holds layers, not pixels, so
-    /// painting on one would go into a bitmap nothing ever draws.
+    /// The layer a paint tool may touch: the active layer's mask when that is
+    /// what is targeted, and otherwise the layer itself. A group holds layers,
+    /// not pixels, so painting on one would go into a bitmap nothing ever
+    /// draws; its mask can still be painted.
     var selectedRasterLayer: Layer? {
-        guard let layer = selectedLayer, !layer.isGroup else { return nil }
-        return layer
+        guard let layer = selectedLayer else { return nil }
+        if maskTargeted, let mask = layer.mask { return mask }
+        return layer.isGroup ? nil : layer
     }
+
+    /// Whether tools paint on the active layer's mask rather than its pixels.
+    /// Picking another layer goes back to its pixels.
+    var maskTargeted = false
+    /// A paintbrush stroke still in progress on a mask, drawn into a copy of
+    /// the mask while compositing so its effect shows before the mouse comes
+    /// up, the way a stroke on pixels does.
+    var maskStrokePreview: ((CGContext) -> Void)?
+
+    /// What a mask looks like with any stroke in progress on it, as the
+    /// grayscale image compositing clips with.
+    private func liveMaskImage(_ mask: Layer) -> CGImage? {
+        guard let preview = maskStrokePreview, mask === selectedRasterLayer else { return mask.maskImage }
+        let scratch = Layer(width: mask.width, height: mask.height, name: "preview")
+        if let pixels = mask.image { scratch.draw(image: pixels) }
+        preview(scratch.context)
+        return scratch.maskImage
+    }
+
+    /// Shows the active layer's mask on the canvas in place of the image,
+    /// so what it hides can be seen and touched up.
+    var showsMaskAlone = false
 
     /// Every picked layer, the active one included.
     var selectedLayerIDs: Set<LayerID> {
@@ -131,10 +161,15 @@ final class Document {
             .init(id: layer.id, name: layer.name, visible: layer.isVisible,
                   opacity: layer.opacity, blend: layer.blendMode,
                   pixels: pixelSource(for: layer, previousStep: previous),
-                  kind: layer.kind, depth: layer.depth, collapsed: layer.isCollapsed)
+                  kind: layer.kind, depth: layer.depth, collapsed: layer.isCollapsed,
+                  maskID: layer.mask?.id, maskEnabled: layer.isMaskEnabled)
         }
-        for layer in layers { recordedVersions[layer.id] = layer.contentVersion }
-        return HistorySnapshot(title: title, layers: states,
+        let masks = layers.compactMap(\.mask).map { mask -> HistorySnapshot.LayerState in
+            .init(id: mask.id, name: mask.name, visible: true, opacity: 1, blend: .normal,
+                  pixels: pixelSource(for: mask, previousStep: previous))
+        }
+        for layer in pixelHolders { recordedVersions[layer.id] = layer.contentVersion }
+        return HistorySnapshot(title: title, layers: states, masks: masks,
                                selectedIndex: selectedLayerIndex, width: width, height: height,
                                selection: selectionPath, selectionFeather: selectionFeather)
     }
@@ -142,8 +177,11 @@ final class Document {
     /// The layers now match the newest step: the next edit is measured from
     /// here, so an untouched layer can be recorded as unchanged.
     private func markRecorded() {
-        for layer in layers { layer.clearDirtyRegion() }
+        for layer in pixelHolders { layer.clearDirtyRegion() }
     }
+
+    /// Every bitmap the document owns: the layers and their masks.
+    private var pixelHolders: [Layer] { layers + layers.compactMap(\.mask) }
 
     /// Decides how little of a layer this step has to keep.
     private func pixelSource(for layer: Layer, previousStep: Int?) -> PixelSource {
@@ -152,7 +190,7 @@ final class Document {
         guard layer.hasPixels else { return PixelSource(.whole(nil)) }
         // Nothing to inherit from: the step has to carry the pixels itself.
         guard let previousStep,
-              history.entries[previousStep].layers.contains(where: { $0.id == layer.id }),
+              history.entries[previousStep].pixelState(layer.id) != nil,
               history.entries[previousStep].width == width,
               history.entries[previousStep].height == height else {
             return PixelSource(.whole(layer.image))
@@ -203,7 +241,20 @@ final class Document {
         height = snap.height
         // Reuse the layer objects where the stack lines up: allocating a fresh
         // bitmap per layer per undo is the most expensive thing this could do.
-        let existing = Dictionary(layers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let existing = Dictionary(pixelHolders.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func restored(_ id: LayerID, name: String, make: () -> Layer) -> Layer {
+            let l: Layer
+            if let reused = existing[id], reused.width == snap.width, reused.height == snap.height {
+                l = reused
+                l.clear()
+            } else {
+                l = make()
+            }
+            if let img = history.image(forLayer: id, at: history.cursor) { l.draw(image: img) }
+            l.clearDirtyRegion()
+            recordedVersions[id] = l.contentVersion
+            return l
+        }
         layers = snap.layers.map { st in
             let reused = existing[st.id]
             let l: Layer
@@ -218,9 +269,17 @@ final class Document {
             if let img = history.image(forLayer: st.id, at: history.cursor) { l.draw(image: img) }
             l.clearDirtyRegion()
             recordedVersions[st.id] = l.contentVersion
+            l.mask = st.maskID.map { id in
+                restored(id, name: st.name) {
+                    let m = Layer(width: snap.width, height: snap.height, name: "\(st.name) mask", id: id)
+                    m.isMask = true
+                    return m
+                }
+            }
             return l
         }
         selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
+        if selectedLayer?.mask == nil { maskTargeted = false; showsMaskAlone = false }
         selectionPath = snap.selection
         selectionFeather = snap.selectionFeather
         appliedStep = history.cursor
@@ -237,6 +296,7 @@ final class Document {
         layer.opacity = state.opacity
         layer.blendMode = state.blend
         layer.isCollapsed = state.collapsed
+        layer.isMaskEnabled = state.maskEnabled
     }
 
     /// Steps to a neighbouring state by repainting only the rectangles that
@@ -250,27 +310,35 @@ final class Document {
               snap.width == width, snap.height == height,
               snap.layers.count == layers.count else { return false }
 
+        // Masks have to line up too: one added or removed is a rebuild.
+        for (state, layer) in zip(snap.layers, layers) where state.maskID != layer.mask?.id { return false }
+
+        let holders = pixelHolders
         var regions: [CGRect] = []
-        for (state, layer) in zip(snap.layers, layers) {
-            guard state.id == layer.id,
-                  let region = history.changedRegion(forLayer: state.id, from: appliedStep, to: target)
+        for holder in holders {
+            guard snap.pixelState(holder.id) != nil,
+                  let region = history.changedRegion(forLayer: holder.id, from: appliedStep, to: target)
             else { return false }
             regions.append(region)
         }
+        for (state, layer) in zip(snap.layers, layers) {
+            guard state.id == layer.id else { return false }
+        }
 
-        for (index, layer) in layers.enumerated() {
-            apply(snap.layers[index], to: layer)
-            let region = regions[index].integral.intersection(bounds)
+        for (index, layer) in layers.enumerated() { apply(snap.layers[index], to: layer) }
+        for (holder, changed) in zip(holders, regions) {
+            let region = changed.integral.intersection(bounds)
             guard !region.isEmpty else { continue }
-            guard let patch = history.image(forLayer: layer.id, at: target, in: region) else { return false }
-            layer.edit(region) { ctx in
+            guard let patch = history.image(forLayer: holder.id, at: target, in: region) else { return false }
+            holder.edit(region) { ctx in
                 ctx.clear(region)
                 ctx.draw(patch, in: region)
             }
-            layer.clearDirtyRegion()
-            recordedVersions[layer.id] = layer.contentVersion
+            holder.clearDirtyRegion()
+            recordedVersions[holder.id] = holder.contentVersion
         }
         selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
+        if selectedLayer?.mask == nil { maskTargeted = false; showsMaskAlone = false }
         selectionPath = snap.selection
         selectionFeather = snap.selectionFeather
         appliedStep = target
@@ -454,6 +522,7 @@ final class Document {
         let lower = layers[belowIndex]
         if let img = upper.image, upper.isVisible {
             lower.context.saveGState()
+            if let mask = upper.activeMask?.maskImage { lower.context.clip(to: bounds, mask: mask) }
             lower.context.setAlpha(upper.opacity)
             lower.context.setBlendMode(upper.blendMode.cgBlendMode)
             lower.context.draw(img, in: bounds)
@@ -483,6 +552,65 @@ final class Document {
             guard layers[below].depth == depth else { return }
             moveSubtree(from: selectedLayerIndex, to: subtreeRange(at: below).lowerBound, depth: depth)
         }
+    }
+
+    // MARK: - Layer masks
+
+    /// Gives the active layer a mask and targets it, so the next stroke
+    /// paints on the mask. With a selection, the mask shows just what is
+    /// selected (or, with `hideAll`, hides just that), the way Photoshop's
+    /// Add Mask does.
+    func addLayerMask(hideAll: Bool = false) {
+        guard let layer = selectedLayer, layer.mask == nil else { return }
+        let mask = layer.makeMask(hideAll: selectionPath == nil ? hideAll : !hideAll)
+        if selectionPath != nil {
+            mask.context.saveGState()
+            clipToSelection(mask.context)
+            mask.context.setFillColor(hideAll ? NSColor.black.cgColor : NSColor.white.cgColor)
+            mask.context.fill(bounds)
+            mask.context.restoreGState()
+        }
+        layer.mask = mask
+        layer.isMaskEnabled = true
+        maskTargeted = true
+        commit("Add Layer Mask")
+        onStructureChange?()
+    }
+
+    /// Removes the active layer's mask, first baking it into the pixels when
+    /// `apply` is set.
+    func removeLayerMask(apply: Bool) {
+        guard let layer = selectedLayer, let mask = layer.mask else { return }
+        if apply, !layer.isGroup, let pixels = layer.image, let gray = mask.maskImage {
+            layer.clear()
+            layer.context.saveGState()
+            layer.context.clip(to: bounds, mask: gray)
+            layer.context.draw(pixels, in: bounds)
+            layer.context.restoreGState()
+        }
+        layer.mask = nil
+        maskTargeted = false
+        showsMaskAlone = false
+        commit(apply ? "Apply Layer Mask" : "Delete Layer Mask")
+        onStructureChange?()
+    }
+
+    /// Turns the active layer's mask off or back on without losing it.
+    func setLayerMaskEnabled(_ enabled: Bool) {
+        guard let layer = selectedLayer, layer.mask != nil, layer.isMaskEnabled != enabled else { return }
+        layer.isMaskEnabled = enabled
+        commit(enabled ? "Enable Layer Mask" : "Disable Layer Mask")
+        onStructureChange?()
+    }
+
+    /// Switches painting between the active layer's pixels and its mask.
+    func targetMask(_ mask: Bool) {
+        let wanted = mask && selectedLayer?.mask != nil
+        guard wanted != maskTargeted else { return }
+        maskTargeted = wanted
+        if !wanted { showsMaskAlone = false }
+        onStructureChange?()
+        onChange?()
     }
 
     // MARK: - Groups
@@ -672,15 +800,17 @@ final class Document {
 
     // MARK: - Compositing
 
+    /// The whole image as it exports: always the layers, never a mask being
+    /// viewed on its own.
     func composite() -> CGImage? {
-        composite(region: bounds, pixelSize: size)
+        composite(region: bounds, pixelSize: size, forDisplay: false)
     }
 
     /// Composites just `region` of the image into a buffer of `pixelSize`.
     /// The canvas only ever asks for what is on screen at the size it will be
     /// drawn, so a redraw costs screen pixels rather than canvas pixels — the
     /// difference between megabytes and gigabytes on a large document.
-    func composite(region: CGRect, pixelSize: CGSize) -> CGImage? {
+    func composite(region: CGRect, pixelSize: CGSize, forDisplay: Bool = true) -> CGImage? {
         let clipped = region.intersection(bounds)
         guard !clipped.isEmpty else { return nil }
 
@@ -695,7 +825,11 @@ final class Document {
         ctx.translateBy(x: -clipped.minX, y: -clipped.minY)
         ctx.interpolationQuality = scaleX < 1 ? .medium : .none
 
-        drawStack(layers.indices.startIndex..<layers.count, depth: 0, into: ctx)
+        if forDisplay, showsMaskAlone, let mask = selectedLayer?.mask.flatMap(liveMaskImage) {
+            ctx.draw(mask, in: bounds)
+        } else {
+            drawStack(layers.indices.startIndex..<layers.count, depth: 0, into: ctx)
+        }
         return ctx.makeImage()
     }
 
@@ -724,6 +858,7 @@ final class Document {
                 continue
             }
             ctx.saveGState()
+            if let mask = layer.activeMask.flatMap(liveMaskImage) { ctx.clip(to: bounds, mask: mask) }
             ctx.setAlpha(layer.opacity)
             ctx.setBlendMode(layer.blendMode.cgBlendMode)
             if layer.isGroup {
@@ -749,12 +884,10 @@ final class Document {
         let nw = max(1, Int(clipped.width))
         let nh = max(1, Int(clipped.height))
         layers = layers.map { old in
-            let l = old.emptyCopy(width: nw, height: nh)
-            if let img = old.image {
-                l.context.draw(img, in: CGRect(x: -clipped.minX, y: -clipped.minY,
-                                               width: CGFloat(old.width), height: CGFloat(old.height)))
+            old.reshaped(width: nw, height: nh) { img, ctx in
+                ctx.draw(img, in: CGRect(x: -clipped.minX, y: -clipped.minY,
+                                         width: CGFloat(old.width), height: CGFloat(old.height)))
             }
-            return l
         }
         width = nw; height = nh
         selectionPath = nil
@@ -768,11 +901,9 @@ final class Document {
         let dx = (CGFloat(nw) - CGFloat(width)) * anchor.x
         let dy = (CGFloat(nh) - CGFloat(height)) * anchor.y
         layers = layers.map { old in
-            let l = old.emptyCopy(width: nw, height: nh)
-            if let img = old.image {
-                l.context.draw(img, in: CGRect(x: dx, y: dy, width: CGFloat(old.width), height: CGFloat(old.height)))
+            old.reshaped(width: nw, height: nh) { img, ctx in
+                ctx.draw(img, in: CGRect(x: dx, y: dy, width: CGFloat(old.width), height: CGFloat(old.height)))
             }
-            return l
         }
         width = nw; height = nh
         selectionPath = nil
@@ -801,13 +932,11 @@ final class Document {
         }
 
         layers = layers.map { old in
-            let l = old.emptyCopy(width: nw, height: nh)
-            if let img = old.image {
+            old.reshaped(width: nw, height: nh) { img, ctx in
                 // Resampling is a choice about this one draw, not a setting the
                 // layer keeps for whatever a tool paints next.
-                resampling.draw(img, in: target, into: l.context)
+                resampling.draw(img, in: target, into: ctx)
             }
-            return l
         }
         width = nw; height = nh
         selectionPath = nil
@@ -823,18 +952,16 @@ final class Document {
         let nw = swap ? height : width
         let nh = swap ? width : height
         layers = layers.map { old in
-            let l = old.emptyCopy(width: nw, height: nh)
-            if let img = old.image {
+            old.reshaped(width: nw, height: nh) { img, ctx in
                 // The transform has to be popped again: tools draw into this
                 // context later and would inherit the rotation.
-                l.context.saveGState()
-                l.context.translateBy(x: CGFloat(nw) / 2, y: CGFloat(nh) / 2)
-                l.context.rotate(by: CGFloat(t) * .pi / 2)
-                l.context.draw(img, in: CGRect(x: -CGFloat(old.width) / 2, y: -CGFloat(old.height) / 2,
-                                               width: CGFloat(old.width), height: CGFloat(old.height)))
-                l.context.restoreGState()
+                ctx.saveGState()
+                ctx.translateBy(x: CGFloat(nw) / 2, y: CGFloat(nh) / 2)
+                ctx.rotate(by: CGFloat(t) * .pi / 2)
+                ctx.draw(img, in: CGRect(x: -CGFloat(old.width) / 2, y: -CGFloat(old.height) / 2,
+                                         width: CGFloat(old.width), height: CGFloat(old.height)))
+                ctx.restoreGState()
             }
-            return l
         }
         width = nw; height = nh
         selectionPath = nil
@@ -858,7 +985,10 @@ final class Document {
     }
 
     func flip(horizontal: Bool, layerOnly: Bool = false) {
-        let targets = layerOnly ? [selectedRasterLayer].compactMap { $0 } : layers
+        // A mask is flipped along with its layer, so it keeps covering the
+        // same pixels.
+        let owners = layerOnly ? [selectedLayer].compactMap { $0 } : layers
+        let targets = owners.flatMap { owner in [owner.isGroup ? nil : owner, owner.mask].compactMap { $0 } }
         for old in targets {
             guard let img = old.image else { continue }
             old.clear()
@@ -1147,12 +1277,21 @@ final class Document {
                 }
                 dict["png"] = png
             }
+            if let mask = layer.mask {
+                guard let gray = mask.maskImage,
+                      let png = NSBitmapImageRep(cgImage: gray).representation(using: .png, properties: [:]) else {
+                    throw DocumentError.encodeFailed
+                }
+                dict["mask"] = png
+                dict["maskEnabled"] = layer.isMaskEnabled
+            }
             layerDicts.append(dict)
         }
         let root: [String: Any] = [
             "format": "Sketchy Document",
-            // Version 2 added layer groups; version 1 files still open.
-            "version": 2,
+            // Version 2 added layer groups and version 3 layer masks; older
+            // files still open.
+            "version": 3,
             "width": width,
             "height": height,
             "selectedLayer": selectedLayerIndex,
@@ -1188,6 +1327,14 @@ final class Document {
                let src = CGImageSourceCreateWithData(png as CFData, nil),
                let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
                 layer.draw(image: img)
+            }
+            if let png = dict["mask"] as? Data,
+               let src = CGImageSourceCreateWithData(png as CFData, nil),
+               let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+                let mask = layer.makeMask()
+                mask.restore(from: img)
+                layer.mask = mask
+                layer.isMaskEnabled = dict["maskEnabled"] as? Bool ?? true
             }
             return layer
         }

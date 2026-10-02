@@ -38,13 +38,19 @@ struct HistorySnapshot {
         let visible: Bool
         let opacity: CGFloat
         let blend: LayerBlendMode
-        let pixels: PixelSource
+        var pixels: PixelSource
         var kind: Layer.Kind = .raster
         var depth: Int = 0
         var collapsed: Bool = false
+        /// The mask's own entry in `masks`, when the layer has one.
+        var maskID: LayerID?
+        var maskEnabled: Bool = true
     }
     let title: String
     let layers: [LayerState]
+    /// Layer masks, kept like layers so their pixels share between steps the
+    /// same way. Each is named by a `maskID` in `layers`.
+    var masks: [LayerState] = []
     let selectedIndex: Int
     let width: Int
     let height: Int
@@ -54,7 +60,12 @@ struct HistorySnapshot {
     var selectionFeather: CGFloat = 0
 
     /// Roughly what this snapshot costs to keep.
-    var bytes: Int { layers.reduce(0) { $0 + $1.pixels.bytes } }
+    var bytes: Int { (layers + masks).reduce(0) { $0 + $1.pixels.bytes } }
+
+    /// The entry holding the pixels for `id`, layer or mask.
+    func pixelState(_ id: LayerID) -> LayerState? {
+        layers.first(where: { $0.id == id }) ?? masks.first(where: { $0.id == id })
+    }
 }
 
 final class HistoryManager {
@@ -87,16 +98,16 @@ final class HistoryManager {
         let removable = min(count, max(0, entries.count - 1))
         guard removable > 0 else { return 0 }
         let survivor = removable
-        var states: [HistorySnapshot.LayerState] = []
-        for state in entries[survivor].layers {
-            let resolved = image(forLayer: state.id, at: survivor)
-            states.append(.init(id: state.id, name: state.name, visible: state.visible,
-                                opacity: state.opacity, blend: state.blend,
-                                pixels: PixelSource(.whole(resolved)),
-                                kind: state.kind, depth: state.depth, collapsed: state.collapsed))
+        func resolved(_ states: [HistorySnapshot.LayerState]) -> [HistorySnapshot.LayerState] {
+            states.map { state in
+                var whole = state
+                whole.pixels = PixelSource(.whole(image(forLayer: state.id, at: survivor)))
+                return whole
+            }
         }
         let old = entries[survivor]
-        entries[survivor] = HistorySnapshot(title: old.title, layers: states,
+        entries[survivor] = HistorySnapshot(title: old.title, layers: resolved(old.layers),
+                                            masks: resolved(old.masks),
                                             selectedIndex: old.selectedIndex,
                                             width: old.width, height: old.height,
                                             selection: old.selection,
@@ -169,7 +180,7 @@ final class HistoryManager {
         var start = index
         var patches: [(CGImage, CGRect)] = []
         loop: while start >= 0 {
-            guard let state = entries[start].layers.first(where: { $0.id == id }) else { break }
+            guard let state = entries[start].pixelState(id) else { break }
             switch state.pixels.content {
             case .whole:
                 break loop
@@ -181,7 +192,7 @@ final class HistoryManager {
             }
         }
         guard start >= 0,
-              let base = entries[start].layers.first(where: { $0.id == id }),
+              let base = entries[start].pixelState(id),
               case .whole(let baseImage) = base.pixels.content else {
             return nil
         }
@@ -211,7 +222,7 @@ final class HistoryManager {
         var start = index
         var patches: [(CGImage, CGRect)] = []
         loop: while start >= 0 {
-            guard let state = entries[start].layers.first(where: { $0.id == id }) else { return nil }
+            guard let state = entries[start].pixelState(id) else { return nil }
             switch state.pixels.content {
             case .whole:      break loop
             case .unchanged:  start -= 1
@@ -221,7 +232,7 @@ final class HistoryManager {
             }
         }
         guard start >= 0,
-              let base = entries[start].layers.first(where: { $0.id == id }),
+              let base = entries[start].pixelState(id),
               case .whole(let baseImage) = base.pixels.content else { return nil }
 
         let ctx = Layer.makeContext(width: Int(box.width), height: Int(box.height))
@@ -249,7 +260,7 @@ final class HistoryManager {
 
         var region: CGRect = .zero
         for index in (lower + 1)...upper {
-            guard let state = entries[index].layers.first(where: { $0.id == id }) else { return nil }
+            guard let state = entries[index].pixelState(id) else { return nil }
             switch state.pixels.content {
             case .unchanged: continue
             case .patch(_, let rect): region = region.isEmpty ? rect : region.union(rect)
@@ -265,7 +276,7 @@ final class HistoryManager {
     func patchDepth(forLayer id: LayerID) -> Int {
         var depth = 0
         var index = cursor
-        while index >= 0, let state = entries[index].layers.first(where: { $0.id == id }) {
+        while index >= 0, let state = entries[index].pixelState(id) {
             switch state.pixels.content {
             case .whole: return depth
             case .unchanged, .patch: depth += 1

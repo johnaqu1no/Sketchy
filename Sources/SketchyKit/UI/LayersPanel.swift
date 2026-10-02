@@ -34,6 +34,9 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     var onMoveDown: (() -> Void)?
     var onProperties: (() -> Void)?
     var onGroup: (() -> Void)?
+    /// ⌘-click on a thumbnail: select what that layer, or its mask, shows.
+    /// The flag is true for the mask.
+    var onLoadSelection: ((Int, Bool, NSEvent.ModifierFlags) -> Void)?
     var onUngroup: (() -> Void)?
     var onChange: (() -> Void)?
     /// Called just before the selected layer changes, so a pending edit can be
@@ -63,6 +66,9 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         table.target = self
         table.registerForDraggedTypes([.string])
         table.onEnter = { [weak self] in self?.beginRename() == true }
+        table.onThumbnail = { [weak self] row, mask, flags in
+            self?.thumbnailClicked(row: row, mask: mask, modifiers: flags) ?? false
+        }
         // ⌥ while dragging copies instead of moving, as it does in Finder.
         table.setDraggingSourceOperationMask([.move, .copy], forLocal: true)
         let menu = NSMenu()
@@ -101,6 +107,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
             ("arrow.down.square", #selector(downTapped), "Move layer down"),
             ("folder.badge.plus", #selector(groupTapped), "Group layer"),
             ("folder.badge.minus", #selector(ungroupTapped), "Ungroup"),
+            ("circle.square", #selector(maskTapped), "Add a layer mask (⌥ hides all)"),
             ("wrench.and.screwdriver", #selector(propertiesTapped), "Layer properties")
         ]
         for spec in specs {
@@ -265,6 +272,51 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     @objc private func groupTapped() { onGroup?() }
     @objc private func ungroupTapped() { onUngroup?() }
     @objc private func propertiesTapped() { onProperties?() }
+
+    @objc private func maskTapped() {
+        guard let doc = document else { return }
+        let hide = NSApp.currentEvent?.modifierFlags.contains(.option) == true
+        doc.addLayerMask(hideAll: hide)
+        reload()
+        onChange?()
+    }
+
+    // MARK: - Thumbnails
+
+    /// A click on a row's thumbnail or its mask's. A plain click picks which
+    /// of the two tools paint on; ⌘ loads it as a selection; on the mask, ⇧
+    /// turns it off and on and ⌥ shows it alone on the canvas. Returns true
+    /// when the click was used up and the row should not treat it as its own.
+    func thumbnailClicked(row: Int, mask: Bool, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard let doc = document else { return false }
+        let index = modelIndex(forRow: row)
+        guard doc.layers.indices.contains(index) else { return false }
+        let layer = doc.layers[index]
+        let flags = modifiers.intersection([.command, .shift, .option])
+        if flags.contains(.command) {
+            onLoadSelection?(index, mask && layer.mask != nil, flags)
+            return true
+        }
+        guard mask, layer.mask != nil, !flags.isEmpty else {
+            // A plain click: the row takes it, then the target follows.
+            if index != doc.selectedLayerIndex { selectRow(row) }
+            doc.targetMask(mask)
+            reload()
+            onChange?()
+            return false
+        }
+        if index != doc.selectedLayerIndex { selectRow(row) }
+        if flags.contains(.shift) {
+            doc.setLayerMaskEnabled(!layer.isMaskEnabled)
+        } else if flags.contains(.option) {
+            doc.targetMask(true)
+            doc.showsMaskAlone.toggle()
+            doc.onChange?()
+        }
+        reload()
+        onChange?()
+        return true
+    }
     /// Double-clicking the name renames in place; anywhere else on the row
     /// opens the layer's properties.
     @objc private func doubleClicked() {
@@ -349,12 +401,37 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         add(several ? "Merge Layers" : (layer?.isGroup == true ? "Merge Group" : "Merge Down"),
             #selector(mergeTapped))
         menu.addItem(.separator())
+        if !several, let layer {
+            if layer.mask != nil {
+                add(layer.isMaskEnabled ? "Disable Layer Mask" : "Enable Layer Mask", #selector(toggleMaskFromMenu))
+                add("Apply Layer Mask", #selector(applyMaskFromMenu), enabled: !layer.isGroup)
+                add("Delete Layer Mask", #selector(deleteMaskFromMenu))
+            } else {
+                add("Add Mask: Reveal All", #selector(addRevealMaskFromMenu))
+                add("Add Mask: Hide All", #selector(addHideMaskFromMenu))
+            }
+            menu.addItem(.separator())
+        }
         let anyHidden = doc.selectedRoots.contains { !doc.layers[$0].isVisible }
         add(anyHidden ? "Show" : "Hide", #selector(toggleVisibilityFromMenu))
         add("Layer Properties…", #selector(propertiesTapped), enabled: !several)
     }
 
     @objc private func renameFromMenu() { beginRename() }
+
+    private func changeMask(_ body: (Document) -> Void) {
+        guard let doc = document else { return }
+        body(doc)
+        reload()
+        onChange?()
+    }
+    @objc private func addRevealMaskFromMenu() { changeMask { $0.addLayerMask(hideAll: false) } }
+    @objc private func addHideMaskFromMenu() { changeMask { $0.addLayerMask(hideAll: true) } }
+    @objc private func applyMaskFromMenu() { changeMask { $0.removeLayerMask(apply: true) } }
+    @objc private func deleteMaskFromMenu() { changeMask { $0.removeLayerMask(apply: false) } }
+    @objc private func toggleMaskFromMenu() {
+        changeMask { doc in doc.setLayerMaskEnabled(!(doc.selectedLayer?.isMaskEnabled ?? true)) }
+    }
 
     @objc private func toggleVisibilityFromMenu() {
         guard let doc = document else { return }
@@ -443,7 +520,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         let index = modelIndex(forRow: row)
         let cell = LayerCellView()
         cell.apply(layer, subtitle: subtitle(for: index), dimmed: !doc.isEffectivelyVisible(index))
-        cell.isActive = index == doc.selectedLayerIndex
+        cell.activeTarget = index == doc.selectedLayerIndex ? (doc.maskTargeted ? .mask : .pixels) : nil
+        cell.maskShownAlone = index == doc.selectedLayerIndex && doc.showsMaskAlone
         cell.toolTip = layer.name
         cell.visibility.onPress = { [weak self] in self?.beginEyeSwipe(fromRow: row) }
         cell.disclosure.tag = row
@@ -464,6 +542,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         }
         if layer.blendMode != .normal { parts.append(layer.blendMode.rawValue) }
         if layer.opacity < 1 { parts.append("\(Int((layer.opacity * 100).rounded()))%") }
+        if layer.mask != nil, !layer.isMaskEnabled { parts.append("Mask off") }
         return parts.joined(separator: " · ")
     }
 
@@ -556,7 +635,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         doc.selectLayers(active: picked, ids: ids)
         for row in rows {
             (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? LayerCellView)?
-                .isActive = row == activeRow
+                .activeTarget = row == activeRow ? (doc.maskTargeted ? .mask : .pixels) : nil
         }
         if let l = doc.selectedLayer {
             blendPopup.selectItem(withTitle: l.blendMode.rawValue)
@@ -572,6 +651,24 @@ final class LayerTableView: NSTableView {
     /// Handles ⏎. Returns false when there was nothing to rename, so the key
     /// carries on to whatever else would have taken it.
     var onEnter: (() -> Bool)?
+    /// A press on a row's thumbnail (false) or mask thumbnail (true). True
+    /// back means the press was used up; otherwise the row handles it as
+    /// usual and the hook is told again once it has.
+    var onThumbnail: ((Int, Bool, NSEvent.ModifierFlags) -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        guard row >= 0, let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? LayerCellView,
+              let hit = cell.thumbnailHit(convert(point, to: cell)) else {
+            super.mouseDown(with: event)
+            return
+        }
+        if onThumbnail?(row, hit, event.modifierFlags) == true { return }
+        // The row still selects and drags as usual from its thumbnail.
+        super.mouseDown(with: event)
+        _ = onThumbnail?(row, hit, [])
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 36 || event.keyCode == 76, onEnter?() == true { return }
@@ -610,6 +707,7 @@ final class EyeButton: NSButton {
 /// contents away.
 final class LayerCellView: NSTableCellView {
     let thumb = NSImageView()
+    let maskThumb = NSImageView()
     let label = NSTextField(labelWithString: "")
     let subtitle = NSTextField(labelWithString: "")
     let visibility = EyeButton(image: NSImage.symbol("eye", "Visible"), target: nil, action: nil)
@@ -622,16 +720,34 @@ final class LayerCellView: NSTableCellView {
     /// Room the eye column takes at the left of every row.
     static let eyeWidth: CGFloat = 24
 
-    /// Marks the layer tools paint on, which matters once several are picked.
-    var isActive = false {
-        didSet {
-            thumb.layer?.borderColor = isActive
-                ? NSColor.controlAccentColor.cgColor
-                : NSColor(white: 0.35, alpha: 1).cgColor
-            thumb.layer?.borderWidth = isActive ? 2 : (isGroupRow ? 0 : 1)
-        }
+    enum Target { case pixels, mask }
+
+    /// Which thumbnail tools paint on, outlined, when this is the active row.
+    var activeTarget: Target? {
+        didSet { updateBorders() }
+    }
+    /// White outline on the mask while it is shown alone on the canvas.
+    var maskShownAlone = false {
+        didSet { updateBorders() }
     }
     private var isGroupRow = false
+
+    private func updateBorders() {
+        let plain = NSColor(white: 0.35, alpha: 1).cgColor
+        thumb.layer?.borderColor = activeTarget == .pixels ? NSColor.controlAccentColor.cgColor : plain
+        thumb.layer?.borderWidth = activeTarget == .pixels ? 2 : (isGroupRow ? 0 : 1)
+        maskThumb.layer?.borderColor = maskShownAlone ? NSColor.white.cgColor
+            : activeTarget == .mask ? NSColor.controlAccentColor.cgColor : plain
+        maskThumb.layer?.borderWidth = activeTarget == .mask || maskShownAlone ? 2 : 1
+    }
+
+    /// Whether a point in the cell lands on the thumbnail (false) or the mask
+    /// thumbnail (true).
+    func thumbnailHit(_ point: NSPoint) -> Bool? {
+        if !maskThumb.isHidden, maskThumb.frame.contains(point) { return true }
+        if thumb.frame.contains(point) { return false }
+        return nil
+    }
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 240, height: LayerCellView.height))
@@ -649,6 +765,12 @@ final class LayerCellView: NSTableCellView {
         thumb.layer?.borderWidth = 1
         thumb.layer?.borderColor = NSColor(white: 0.35, alpha: 1).cgColor
         addSubview(thumb)
+
+        maskThumb.imageScaling = .scaleProportionallyUpOrDown
+        maskThumb.wantsLayer = true
+        maskThumb.layer?.borderWidth = 1
+        maskThumb.layer?.borderColor = NSColor(white: 0.35, alpha: 1).cgColor
+        addSubview(maskThumb)
 
         label.font = .systemFont(ofSize: 12)
         label.autoresizingMask = [.width]
@@ -712,7 +834,15 @@ final class LayerCellView: NSTableCellView {
             ? NSImage.symbol("folder.fill", "Group")
             : layer.thumbnail(size: NSSize(width: 34, height: 34))
 
-        let textX = thumbX + 42
+        var textX = thumbX + 42
+        maskThumb.isHidden = layer.mask == nil
+        if let mask = layer.mask {
+            maskThumb.frame = NSRect(x: thumbX + 40, y: 5, width: 34, height: 34)
+            maskThumb.image = mask.thumbnail(size: NSSize(width: 34, height: 34))
+            // A disabled mask is crossed out, as in Photoshop.
+            maskThumb.alphaValue = layer.isMaskEnabled ? 1 : 0.35
+            textX += 40
+        }
         let textWidth = max(40, bounds.width - textX - 4)
         subtitle.stringValue = detail
         subtitle.isHidden = detail.isEmpty
@@ -727,5 +857,6 @@ final class LayerCellView: NSTableCellView {
         showVisibility(layer.isVisible)
         // The eye stays readable so a hidden row can be found and shown again.
         for view in [thumb, label, subtitle, disclosure] as [NSView] { view.alphaValue = dimmed ? 0.4 : 1 }
+        updateBorders()
     }
 }

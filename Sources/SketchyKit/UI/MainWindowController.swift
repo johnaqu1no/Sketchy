@@ -614,7 +614,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func copy(_ sender: Any?) {
-        guard let layer = doc.selectedLayer, let img = layer.image else { return }
+        guard let layer = doc.selectedRasterLayer, let img = layer.image else { return }
         let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
         let box = sel.boundingBoxOfPath.insetBy(dx: -doc.selectionReach, dy: -doc.selectionReach).integral.intersection(doc.bounds)
         guard !box.isEmpty else { return }
@@ -881,6 +881,25 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         doc.ungroup(at: index)
         refreshPanels()
     }
+    @objc func addLayerMask(_ sender: Any?) {
+        commitPendingEdits()
+        doc.addLayerMask()
+        refreshPanels()
+    }
+
+    @objc func applyLayerMask(_ sender: Any?) {
+        commitPendingEdits()
+        guard doc.selectedLayer?.isGroup == false else { return groupWarning() }
+        doc.removeLayerMask(apply: true)
+        refreshPanels()
+    }
+
+    @objc func deleteLayerMask(_ sender: Any?) {
+        commitPendingEdits()
+        doc.removeLayerMask(apply: false)
+        refreshPanels()
+    }
+
     @objc func mergeLayerDown(_ sender: Any?) { commitPendingEdits(); doc.mergeLayerDown(); refreshPanels() }
     @objc func flipLayerHorizontal(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: true, layerOnly: true); refreshPanels() }
     @objc func flipLayerVertical(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: false, layerOnly: true); refreshPanels() }
