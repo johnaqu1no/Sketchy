@@ -45,6 +45,7 @@ struct HistorySnapshot {
         /// The mask's own entry in `masks`, when the layer has one.
         var maskID: LayerID?
         var maskEnabled: Bool = true
+        var clipped: Bool = false
     }
     let title: String
     let layers: [LayerState]

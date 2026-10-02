@@ -2403,6 +2403,81 @@ do {
     check(grouped.selectedRasterLayer?.isMask == true, "and a group's mask can be painted")
 }
 
+section("clipping masks")
+do {
+    // White background, a red square in the middle, and a blue layer over
+    // everything clipped to the square.
+    let doc = Document(width: 40, height: 40)
+    doc.addLayer(named: "Square")
+    doc.selectedLayer?.context.setFillColor(NSColor.red.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 10, y: 10, width: 20, height: 20))
+    doc.addLayer(named: "Blue")
+    doc.selectedLayer?.fill(with: .blue)
+    func color(_ x: Int, _ y: Int) -> (Int, Int, Int) {
+        let p = pixel(doc, x, y)
+        return (Int(p?.r ?? 0), Int(p?.g ?? 0), Int(p?.b ?? 0))
+    }
+
+    check(color(5, 5).2 > 200 && color(5, 5).0 < 50, "unclipped, blue covers everything")
+    doc.setClipping(true)
+    check(doc.isClipped(2), "the blue layer is clipped")
+    equal(doc.clippingBase(of: 2), 1, "to the square")
+    let outside = color(5, 5)
+    check(outside.0 > 240 && outside.1 > 240 && outside.2 > 240, "outside the square the background shows — got \(outside)")
+    let inside = color(20, 20)
+    check(inside.2 > 200 && inside.0 < 50, "inside it the blue shows — got \(inside)")
+
+    // A second clipped layer joins the stack.
+    doc.addLayer(named: "Green")
+    doc.selectedLayer?.context.setFillColor(NSColor.green.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 0, width: 15, height: 40))
+    doc.setClipping(true)
+    equal(doc.clippedRun(above: 1), [2, 3], "the run above the base holds both")
+    check(color(12, 20).1 > 200 && color(12, 20).0 < 50, "green shows inside the square")
+    check(color(5, 20).0 > 240 && color(5, 20).2 > 240, "and nowhere outside it")
+
+    // The base's opacity covers the whole stack.
+    doc.layers[1].opacity = 0
+    let gone = color(20, 20)
+    check(gone.0 > 240 && gone.1 > 240 && gone.2 > 240, "a hidden base hides what clips to it")
+    doc.layers[1].opacity = 1
+
+    doc.undo()
+    check(!doc.layers[3].clipsToBelow, "undo releases the green layer again")
+    doc.redo()
+
+    // Merging a clipped layer down keeps it inside the base.
+    doc.selectedLayerIndex = 3
+    doc.setClipping(false)
+    doc.selectedLayerIndex = 2
+    doc.mergeLayerDown()
+    let merged = doc.layers[1]
+    equal(PixelOps.sample(merged, x: 5, y: 5)?.a ?? 99, 0, "merged down, the clipped blue stays inside the square")
+    check((PixelOps.sample(merged, x: 20, y: 20)?.b ?? 0) > 200, "and colours it")
+
+    // Moving a clipped layer out of its stack releases it.
+    let moving = Document(width: 10, height: 10)
+    for name in ["A", "B", "C"] { moving.addLayer(named: name) }
+    moving.selectedLayerIndex = 2
+    moving.setClipping(true)
+    moving.selectedLayerIndex = 2
+    moving.moveSelectedLayers(to: 4, depth: 0)
+    check(!moving.layers[3].clipsToBelow, "dragged out of its stack it is released")
+    // Dropped into the middle of a stack, it joins it.
+    moving.selectedLayerIndex = 1
+    moving.layers[2].clipsToBelow = true
+    moving.selectedLayerIndex = 3
+    moving.moveSelectedLayers(to: 2, depth: 0)
+    check(moving.layers[2].clipsToBelow, "dropped into the middle of a stack it joins it")
+
+    // Saved and reopened, it is still clipped.
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("clip-test.sketchy")
+    try? moving.writeNative(to: url)
+    let reopened = try? Document.openNative(url: url)
+    check(reopened?.layers[2].clipsToBelow == true, "clipping survives a save")
+    try? FileManager.default.removeItem(at: url)
+}
+
 section("a floating paste sits in its layer's place")
 do {
     // Bottom layer gets the paste; the layer above it is opaque white, so a

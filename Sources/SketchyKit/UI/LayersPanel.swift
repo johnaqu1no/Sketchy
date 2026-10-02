@@ -66,6 +66,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         table.target = self
         table.registerForDraggedTypes([.string])
         table.onEnter = { [weak self] in self?.beginRename() == true }
+        table.onClipBoundary = { [weak self] row in self?.toggleClipping(row: row) }
         table.onThumbnail = { [weak self] row, mask, flags in
             self?.thumbnailClicked(row: row, mask: mask, modifiers: flags) ?? false
         }
@@ -401,6 +402,12 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         add(several ? "Merge Layers" : (layer?.isGroup == true ? "Merge Group" : "Merge Down"),
             #selector(mergeTapped))
         menu.addItem(.separator())
+        if doc.selectedRoots.contains(where: { doc.layers[$0].clipsToBelow }) {
+            add("Release Clipping Mask", #selector(releaseClipFromMenu))
+        } else {
+            add("Create Clipping Mask", #selector(clipFromMenu),
+                enabled: doc.selectedRoots.contains { doc.previousSibling(of: $0) != nil })
+        }
         if !several, let layer {
             if layer.mask != nil {
                 add(layer.isMaskEnabled ? "Disable Layer Mask" : "Enable Layer Mask", #selector(toggleMaskFromMenu))
@@ -418,6 +425,18 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     }
 
     @objc private func renameFromMenu() { beginRename() }
+
+    /// ⌥-click on the line under a row clips that row to the one below it,
+    /// or releases it.
+    func toggleClipping(row: Int) {
+        guard let doc = document else { return }
+        doc.toggleClipping(at: modelIndex(forRow: row))
+        reload()
+        onChange?()
+    }
+
+    @objc private func clipFromMenu() { changeMask { $0.setClipping(true) } }
+    @objc private func releaseClipFromMenu() { changeMask { $0.setClipping(false) } }
 
     private func changeMask(_ body: (Document) -> Void) {
         guard let doc = document else { return }
@@ -519,7 +538,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         let layer = doc.layers[modelIndex(forRow: row)]
         let index = modelIndex(forRow: row)
         let cell = LayerCellView()
-        cell.apply(layer, subtitle: subtitle(for: index), dimmed: !doc.isEffectivelyVisible(index))
+        cell.apply(layer, subtitle: subtitle(for: index), dimmed: !doc.isEffectivelyVisible(index),
+                   clipped: doc.isClipped(index))
         cell.activeTarget = index == doc.selectedLayerIndex ? (doc.maskTargeted ? .mask : .pixels) : nil
         cell.maskShownAlone = index == doc.selectedLayerIndex && doc.showsMaskAlone
         cell.toolTip = layer.name
@@ -543,6 +563,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         if layer.blendMode != .normal { parts.append(layer.blendMode.rawValue) }
         if layer.opacity < 1 { parts.append("\(Int((layer.opacity * 100).rounded()))%") }
         if layer.mask != nil, !layer.isMaskEnabled { parts.append("Mask off") }
+        if let base = doc.clippingBase(of: index) { parts.insert("Clipped to \(doc.layers[base].name)", at: 0) }
         return parts.joined(separator: " · ")
     }
 
@@ -655,10 +676,20 @@ final class LayerTableView: NSTableView {
     /// back means the press was used up; otherwise the row handles it as
     /// usual and the hook is told again once it has.
     var onThumbnail: ((Int, Bool, NSEvent.ModifierFlags) -> Bool)?
+    /// ⌥-click on the line between two rows; the row above it is passed.
+    var onClipBoundary: ((Int) -> Void)?
+
+    /// How close to the line between two rows an ⌥-click has to land.
+    static let clipBand: CGFloat = 6
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
+        if event.modifierFlags.contains(.option), row >= 0, row < numberOfRows - 1,
+           point.y > rect(ofRow: row).maxY - LayerTableView.clipBand {
+            onClipBoundary?(row)
+            return
+        }
         guard row >= 0, let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? LayerCellView,
               let hit = cell.thumbnailHit(convert(point, to: cell)) else {
             super.mouseDown(with: event)
@@ -713,12 +744,15 @@ final class LayerCellView: NSTableCellView {
     let visibility = EyeButton(image: NSImage.symbol("eye", "Visible"), target: nil, action: nil)
     let disclosure = NSButton(image: NSImage.symbol("chevron.down", "Collapse"),
                               target: nil, action: nil)
+    let clipHook = NSImageView(image: NSImage.symbol("arrow.turn.left.down", "Clipped"))
 
     static let height: CGFloat = 44
     /// How far one level of nesting shifts a row.
     static let indent: CGFloat = 22
     /// Room the eye column takes at the left of every row.
     static let eyeWidth: CGFloat = 24
+    /// The extra step a clipped layer is indented by.
+    static let clipIndent: CGFloat = 16
 
     enum Target { case pixels, mask }
 
@@ -759,6 +793,10 @@ final class LayerCellView: NSTableCellView {
         disclosure.isBordered = false
         disclosure.imagePosition = .imageOnly
         addSubview(disclosure)
+
+        clipHook.contentTintColor = .secondaryLabelColor
+        clipHook.isHidden = true
+        addSubview(clipHook)
 
         thumb.imageScaling = .scaleProportionallyUpOrDown
         thumb.wantsLayer = true
@@ -819,9 +857,14 @@ final class LayerCellView: NSTableCellView {
 
     /// `dimmed` fades a row that cannot be seen, whether hidden itself or
     /// inside a hidden group.
-    func apply(_ layer: Layer, subtitle detail: String = "", dimmed: Bool = false) {
+    func apply(_ layer: Layer, subtitle detail: String = "", dimmed: Bool = false, clipped: Bool = false) {
         isGroupRow = layer.isGroup
+        // A clipped layer sits in a step, under a hook pointing at the layer
+        // it clips to.
         let x = LayerCellView.eyeWidth + CGFloat(layer.depth) * LayerCellView.indent
+            + (clipped ? LayerCellView.clipIndent : 0)
+        clipHook.isHidden = !clipped
+        clipHook.frame = NSRect(x: x - LayerCellView.clipIndent + 2, y: 14, width: 14, height: 16)
         disclosure.isHidden = !layer.isGroup
         disclosure.frame = NSRect(x: x + 2, y: 14, width: 14, height: 16)
         disclosure.image = NSImage.symbol(layer.isCollapsed ? "chevron.right" : "chevron.down",

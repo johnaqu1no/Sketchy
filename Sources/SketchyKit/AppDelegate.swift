@@ -309,6 +309,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         layers.addItem(item("Duplicate Layer", #selector(MainWindowController.duplicateLayer(_:)), "U", [.command, .control]))
         layers.addItem(item("Merge Layer Down", #selector(MainWindowController.mergeLayerDown(_:)), "M", [.command, .control]))
         layers.addItem(.separator())
+        layers.addItem(item("Create/Release Clipping Mask", #selector(MainWindowController.toggleClippingMask(_:)),
+                            "g", [.command, .option]))
         layers.addItem(item("Add Layer Mask", #selector(MainWindowController.addLayerMask(_:)), ""))
         layers.addItem(item("Apply Layer Mask", #selector(MainWindowController.applyLayerMask(_:)), ""))
         layers.addItem(item("Delete Layer Mask", #selector(MainWindowController.deleteLayerMask(_:)), ""))

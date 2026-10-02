@@ -162,7 +162,8 @@ final class Document {
                   opacity: layer.opacity, blend: layer.blendMode,
                   pixels: pixelSource(for: layer, previousStep: previous),
                   kind: layer.kind, depth: layer.depth, collapsed: layer.isCollapsed,
-                  maskID: layer.mask?.id, maskEnabled: layer.isMaskEnabled)
+                  maskID: layer.mask?.id, maskEnabled: layer.isMaskEnabled,
+                  clipped: layer.clipsToBelow)
         }
         let masks = layers.compactMap(\.mask).map { mask -> HistorySnapshot.LayerState in
             .init(id: mask.id, name: mask.name, visible: true, opacity: 1, blend: .normal,
@@ -297,6 +298,7 @@ final class Document {
         layer.blendMode = state.blend
         layer.isCollapsed = state.collapsed
         layer.isMaskEnabled = state.maskEnabled
+        layer.clipsToBelow = state.clipped
     }
 
     /// Steps to a neighbouring state by repainting only the rectangles that
@@ -455,6 +457,16 @@ final class Document {
         }
         dest = dest.clamped(to: 0...layers.count)
         layers.insert(contentsOf: blocks.flatMap { $0 }, at: dest)
+        // Clipping follows where a layer lands, as it does in Photoshop: in
+        // the middle of a clipping stack it joins it, a clipped layer landing
+        // on top of one stays in it, and anywhere else it is released rather
+        // than clipping to whatever now happens to be below.
+        for head in blocks.compactMap(\.last) {
+            guard let index = layers.firstIndex(where: { $0 === head }) else { continue }
+            guard let below = previousSibling(of: index) else { head.clipsToBelow = false; continue }
+            let aboveClipped = nextSibling(of: index).map { layers[$0].clipsToBelow } ?? false
+            head.clipsToBelow = aboveClipped || (head.clipsToBelow && layers[below].clipsToBelow)
+        }
         return blocks.compactMap { $0.last?.id }
     }
 
@@ -520,12 +532,21 @@ final class Document {
         guard belowIndex >= 0, !layers[belowIndex].isGroup,
               layers[belowIndex].depth == upper.depth else { return }
         let lower = layers[belowIndex]
+        // A clipped layer only ever showed inside the one below, so merged
+        // into it, it must not spill past that layer's edges.
+        let shape = isClipped(selectedLayerIndex) ? lower.image : nil
         if let img = upper.image, upper.isVisible {
             lower.context.saveGState()
             if let mask = upper.activeMask?.maskImage { lower.context.clip(to: bounds, mask: mask) }
             lower.context.setAlpha(upper.opacity)
             lower.context.setBlendMode(upper.blendMode.cgBlendMode)
             lower.context.draw(img, in: bounds)
+            lower.context.restoreGState()
+        }
+        if let shape {
+            lower.context.saveGState()
+            lower.context.setBlendMode(.destinationIn)
+            lower.context.draw(shape, in: bounds)
             lower.context.restoreGState()
         }
         layers.remove(at: selectedLayerIndex)
@@ -838,40 +859,164 @@ final class Document {
     /// than to each member in turn — the whole point of grouping.
     func drawStack(_ range: Range<Int>, depth: Int, into ctx: CGContext) {
         for i in range where layers[i].depth == depth {
-            let layer = layers[i]
-            guard layer.isVisible, layer.opacity > 0 else { continue }
-            let img: CGImage?
-            if layer.isGroup {
-                let buffer = Layer.makeContext(width: ctx.width, height: ctx.height)
-                buffer.concatenate(ctx.ctm)
-                buffer.interpolationQuality = ctx.interpolationQuality
-                drawStack(childRange(ofGroupAt: i), depth: depth + 1, into: buffer)
-                img = buffer.makeImage()
+            // A clipped layer is drawn along with the layer it clips to.
+            if layers[i].clipsToBelow, let below = previousSibling(of: i), range.contains(below) { continue }
+            let run = clippedRun(above: i).filter { range.contains($0) }
+            if run.isEmpty {
+                drawLayer(at: i, depth: depth, into: ctx)
             } else {
-                // Zoomed out, a pre-shrunk copy costs far less to sample than
-                // the full-size layer.
-                let scale = ctx.ctm.a
-                img = layer.image(forScale: abs(scale))
+                drawClippingStack(base: i, clipped: run, depth: depth, into: ctx)
             }
-            guard let img else {
-                layerOverlay?(layer, ctx)
-                continue
-            }
-            ctx.saveGState()
-            if let mask = layer.activeMask.flatMap(liveMaskImage) { ctx.clip(to: bounds, mask: mask) }
-            ctx.setAlpha(layer.opacity)
-            ctx.setBlendMode(layer.blendMode.cgBlendMode)
-            if layer.isGroup {
-                // The buffer is already in device pixels; drop the transform
-                // so it lands one-to-one instead of being scaled twice.
-                ctx.concatenate(ctx.ctm.inverted())
-                ctx.draw(img, in: CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
-            } else {
-                ctx.draw(img, in: bounds)
-            }
-            ctx.restoreGState()
-            layerOverlay?(layer, ctx)
         }
+    }
+
+    /// Draws one entry of the stack, a group as a unit, with its mask.
+    /// `opacity` and `blend` default to the layer's own.
+    private func drawLayer(at i: Int, depth: Int, into ctx: CGContext,
+                           opacity: CGFloat? = nil, blend: CGBlendMode? = nil) {
+        let layer = layers[i]
+        guard layer.isVisible, layer.opacity > 0 else { return }
+        let img: CGImage?
+        if layer.isGroup {
+            let buffer = deviceBuffer(like: ctx)
+            drawStack(childRange(ofGroupAt: i), depth: depth + 1, into: buffer)
+            img = buffer.makeImage()
+        } else {
+            // Zoomed out, a pre-shrunk copy costs far less to sample than
+            // the full-size layer.
+            let scale = ctx.ctm.a
+            img = layer.image(forScale: abs(scale))
+        }
+        guard let img else {
+            layerOverlay?(layer, ctx)
+            return
+        }
+        ctx.saveGState()
+        if let mask = layer.activeMask.flatMap(liveMaskImage) { ctx.clip(to: bounds, mask: mask) }
+        ctx.setAlpha(opacity ?? layer.opacity)
+        ctx.setBlendMode(blend ?? layer.blendMode.cgBlendMode)
+        if layer.isGroup {
+            drawDevice(img, into: ctx)
+        } else {
+            ctx.draw(img, in: bounds)
+        }
+        ctx.restoreGState()
+        layerOverlay?(layer, ctx)
+    }
+
+    /// A clipping stack: the base and the layers clipped to it are drawn
+    /// together, then cut back to the base's own shape, and the result lands
+    /// with the base's opacity and blend mode, the way Photoshop does it.
+    private func drawClippingStack(base: Int, clipped: [Int], depth: Int, into ctx: CGContext) {
+        let layer = layers[base]
+        guard layer.isVisible, layer.opacity > 0 else { return }
+        let buffer = deviceBuffer(like: ctx)
+        drawLayer(at: base, depth: depth, into: buffer, opacity: 1, blend: .normal)
+        guard let shape = buffer.makeImage() else { return }
+        for index in clipped { drawLayer(at: index, depth: depth, into: buffer) }
+        // Painting over the base can only change its colour, never its shape.
+        buffer.saveGState()
+        buffer.setBlendMode(.destinationIn)
+        drawDevice(shape, into: buffer)
+        buffer.restoreGState()
+        guard let result = buffer.makeImage() else { return }
+        ctx.saveGState()
+        ctx.setAlpha(layer.opacity)
+        ctx.setBlendMode(layer.blendMode.cgBlendMode)
+        drawDevice(result, into: ctx)
+        ctx.restoreGState()
+    }
+
+    /// A blank buffer the size of `ctx` in device pixels, drawing with the
+    /// same transform, so a unit composited into it lands one-to-one.
+    private func deviceBuffer(like ctx: CGContext) -> CGContext {
+        let buffer = Layer.makeContext(width: ctx.width, height: ctx.height)
+        buffer.concatenate(ctx.ctm)
+        buffer.interpolationQuality = ctx.interpolationQuality
+        return buffer
+    }
+
+    /// Draws a device-pixel buffer back one-to-one, dropping the transform so
+    /// it is not scaled twice.
+    private func drawDevice(_ image: CGImage, into ctx: CGContext) {
+        ctx.saveGState()
+        ctx.concatenate(ctx.ctm.inverted())
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
+        ctx.restoreGState()
+    }
+
+    // MARK: - Clipping masks
+
+    /// The entry directly below `index` at the same level, skipping over a
+    /// group's members to its header. Nil at the bottom of a group or stack.
+    func previousSibling(of index: Int) -> Int? {
+        guard layers.indices.contains(index) else { return nil }
+        let below = subtreeRange(at: index).lowerBound - 1
+        guard below >= 0, layers[below].depth == layers[index].depth else { return nil }
+        return below
+    }
+
+    /// The entry directly above `index` at the same level, if any.
+    func nextSibling(of index: Int) -> Int? {
+        guard layers.indices.contains(index) else { return nil }
+        let depth = layers[index].depth
+        var above = index + 1
+        while above < layers.count {
+            if layers[above].depth < depth { return nil }
+            if layers[above].depth == depth { return above }
+            above += 1
+        }
+        return nil
+    }
+
+    /// The layers clipped to the one at `index`: the unbroken run of clipped
+    /// siblings straight above it.
+    func clippedRun(above index: Int) -> [Int] {
+        guard layers.indices.contains(index), !isClipped(index) else { return [] }
+        var run: [Int] = []
+        var current = index
+        while let next = nextSibling(of: current), layers[next].clipsToBelow {
+            run.append(next)
+            current = next
+        }
+        return run
+    }
+
+    /// Whether the layer at `index` is clipped: flagged, with something below
+    /// it to clip to.
+    func isClipped(_ index: Int) -> Bool {
+        layers.indices.contains(index) && layers[index].clipsToBelow && previousSibling(of: index) != nil
+    }
+
+    /// The layer a clipped layer clips to.
+    func clippingBase(of index: Int) -> Int? {
+        guard isClipped(index) else { return nil }
+        var current = index
+        while let below = previousSibling(of: current) {
+            if !layers[below].clipsToBelow { return below }
+            current = below
+        }
+        return current == index ? nil : current
+    }
+
+    /// Clips the picked layers to the layer below them, or releases them.
+    func setClipping(_ clipped: Bool) {
+        let roots = selectedRoots.filter { clipped ? previousSibling(of: $0) != nil : layers[$0].clipsToBelow }
+        guard !roots.isEmpty else { return }
+        for root in roots { layers[root].clipsToBelow = clipped }
+        commit(clipped ? "Create Clipping Mask" : "Release Clipping Mask")
+        onStructureChange?()
+    }
+
+    /// Clips the layer at `index` to the one below, or releases it: an
+    /// ⌥-click on the line between two rows.
+    func toggleClipping(at index: Int) {
+        guard layers.indices.contains(index) else { return }
+        let clipping = !layers[index].clipsToBelow
+        guard !clipping || previousSibling(of: index) != nil else { return }
+        layers[index].clipsToBelow = clipping
+        commit(clipping ? "Create Clipping Mask" : "Release Clipping Mask")
+        onStructureChange?()
     }
 
     // MARK: - Canvas geometry
@@ -1268,7 +1413,8 @@ final class Document {
                 "blend": layer.blendMode.rawValue,
                 "depth": layer.depth,
                 "group": layer.isGroup,
-                "collapsed": layer.isCollapsed
+                "collapsed": layer.isCollapsed,
+                "clipped": layer.clipsToBelow
             ]
             if !layer.isGroup {
                 guard let img = layer.image,
@@ -1289,8 +1435,8 @@ final class Document {
         }
         let root: [String: Any] = [
             "format": "Sketchy Document",
-            // Version 2 added layer groups and version 3 layer masks; older
-            // files still open.
+            // Version 2 added layer groups and version 3 layer and clipping
+            // masks; older files still open.
             "version": 3,
             "width": width,
             "height": height,
@@ -1320,6 +1466,7 @@ final class Document {
                               kind: (dict["group"] as? Bool ?? false) ? .group : .raster,
                               depth: dict["depth"] as? Int ?? 0)
             layer.isCollapsed = dict["collapsed"] as? Bool ?? false
+            layer.clipsToBelow = dict["clipped"] as? Bool ?? false
             layer.isVisible = dict["visible"] as? Bool ?? true
             layer.opacity = CGFloat(dict["opacity"] as? Double ?? 1)
             layer.blendMode = LayerBlendMode(rawValue: dict["blend"] as? String ?? "") ?? .normal

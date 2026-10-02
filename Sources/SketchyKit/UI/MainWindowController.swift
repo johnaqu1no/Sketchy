@@ -881,6 +881,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         doc.ungroup(at: index)
         refreshPanels()
     }
+    /// Clips the picked layers to the layer below, or releases them when they
+    /// already are.
+    @objc func toggleClippingMask(_ sender: Any?) {
+        commitPendingEdits()
+        let clipped = doc.selectedRoots.contains { doc.layers[$0].clipsToBelow }
+        doc.setClipping(!clipped)
+        refreshPanels()
+    }
+
     @objc func addLayerMask(_ sender: Any?) {
         commitPendingEdits()
         doc.addLayerMask()

@@ -41,6 +41,8 @@ final class Layer {
     var isMaskEnabled = true
     /// Set on the layer that serves as another layer's mask.
     var isMask = false
+    /// Clipped to the layer below: shown only where that layer has pixels.
+    var clipsToBelow = false
 
     /// A blank mask for this layer: all white, so it hides nothing until
     /// painted, or all black when it should start hidden.
@@ -241,6 +243,7 @@ final class Layer {
         l.blendMode = blendMode
         l.isCollapsed = isCollapsed
         l.isMaskEnabled = isMaskEnabled
+        l.clipsToBelow = clipsToBelow
         if let mask {
             let m = l.makeMask()
             if let img = mask.image { m.restore(from: img) }
@@ -274,6 +277,7 @@ final class Layer {
         l.blendMode = blendMode
         l.isCollapsed = isCollapsed
         l.isMaskEnabled = isMaskEnabled
+        l.clipsToBelow = clipsToBelow
         return l
     }
 
