@@ -16,11 +16,22 @@ fourteen blend modes, and are composited top-down every time the canvas
 redraws. Every edit pushes a snapshot onto the history, so the History palette
 is a list you can click back into rather than a fixed number of undo steps.
 
-**Tools.** Nineteen of them, each with a one-key shortcut shown in its tooltip
+**Layers palette.** ⇧- or ⌘-click to pick several layers, then delete,
+duplicate, group, merge or drag them together; ⌥-drag copies. Press an eye and
+drag down the column to hide a run of layers in one step. Right-click a row for
+everything else.
+
+**Masks.** A layer mask hides the layer wherever it's painted black, and every
+paint tool works on it. Click a thumbnail to paint the layer or its mask, ⇧-click
+the mask to turn it off, ⌥-click it to see it on its own. ⌥-click the line
+between two rows (or ⌥⌘G) to clip the upper layer to the one below, so it only
+shows inside that layer's pixels.
+
+**Tools.** Twenty-five of them, each with a one-key shortcut shown in its tooltip
 and rebindable under Sketchy ▸ Tool Shortcuts. Tools sharing a key cycle through
 each other.
 
-The set is selections, magic wand, brush, pencil, eraser,
+The set is rectangle, ellipse, lasso and polygon lasso selections, magic wand, brush, pencil, eraser,
 bucket, gradient, clone stamp, recolor, colour picker, text, line, and thirteen
 shapes. The options bar rebuilds itself around whichever tool is active, so it
 only ever shows settings that tool actually uses. Left-drag paints with the
@@ -31,6 +42,12 @@ intersect; a click with no drag clears the selection. The
 magic wand traces the boundary of what it matched, so the marching ants outline
 the region rather than hatching it. Move Selection drags and resizes the
 outline; Move Selected Pixels lifts the pixels themselves.
+
+Edit ▸ Modify Selection expands, contracts or feathers the outline, and a
+feathered edge fades every fill, brush, erase and copy. ⌘-click a layer
+thumbnail to select its pixels (⇧ adds, ⌥ subtracts). Select Subject (⌥⌘A)
+and the wand's Object mode find things in a photo with Vision on macOS 14 and
+later. Color Range picks every pixel near the primary colour.
 
 **Floating pixels.** A paste larger than the canvas asks first: expand the
 canvas to hold it, or keep the canvas and let the paste float. Floating pixels
