@@ -7,7 +7,16 @@ final class Document {
     private(set) var width: Int
     private(set) var height: Int
     var layers: [Layer] = []
-    var selectedLayerIndex: Int = 0
+    /// The active layer: the one tools paint on and the panels describe.
+    /// Picking a different one drops any others picked alongside it.
+    var selectedLayerIndex: Int = 0 {
+        didSet { if selectedLayerIndex != oldValue { extraSelectedIDs = [] } }
+    }
+    /// Layers picked alongside the active one with ⇧ or ⌘ in the Layers
+    /// palette. Commands that make sense on several layers at once (delete,
+    /// duplicate, group, merge, drag) take all of them; painting still goes to
+    /// the active layer alone.
+    var extraSelectedIDs: Set<LayerID> = []
     /// Active selection in image coordinates; nil means "everything".
     var selectionPath: CGPath?
     var fileURL: URL?
@@ -35,6 +44,48 @@ final class Document {
     var selectedRasterLayer: Layer? {
         guard let layer = selectedLayer, !layer.isGroup else { return nil }
         return layer
+    }
+
+    /// Every picked layer, the active one included.
+    var selectedLayerIDs: Set<LayerID> {
+        var ids = extraSelectedIDs.intersection(layers.map(\.id))
+        if let active = selectedLayer { ids.insert(active.id) }
+        return ids
+    }
+
+    /// Picks the layers in `ids`, with the one at `active` as the layer tools
+    /// paint on.
+    func selectLayers(active: Int, ids: Set<LayerID>) {
+        guard layers.indices.contains(active) else { return }
+        selectedLayerIndex = active
+        extraSelectedIDs = ids.subtracting([layers[active].id])
+    }
+
+    /// The picked layers as blocks to act on, bottom first. A layer inside a
+    /// group that is itself picked rides along with the group rather than
+    /// counting twice.
+    var selectedRoots: [Int] {
+        let ids = selectedLayerIDs
+        return layers.indices.filter { index in
+            guard ids.contains(layers[index].id) else { return false }
+            var parent = parentGroup(of: index)
+            while let p = parent {
+                if ids.contains(layers[p].id) { return false }
+                parent = parentGroup(of: p)
+            }
+            return true
+        }
+    }
+
+    /// Whether this layer can be seen at all: hidden itself, or inside a
+    /// hidden group, it cannot.
+    func isEffectivelyVisible(_ index: Int) -> Bool {
+        var current: Int? = index
+        while let i = current {
+            guard layers[i].isVisible else { return false }
+            current = parentGroup(of: i)
+        }
+        return true
     }
 
     var displayName: String {
@@ -256,31 +307,134 @@ final class Document {
         onStructureChange?()
     }
 
+    /// Deletes every picked layer, groups with their contents.
     func deleteSelectedLayer() {
-        guard layers.indices.contains(selectedLayerIndex) else { return }
-        let range = subtreeRange(at: selectedLayerIndex)
+        let roots = selectedRoots
+        guard !roots.isEmpty else { return }
+        let doomed = Set(roots.flatMap { Array(subtreeRange(at: $0)) })
         // Something has to be left to paint on.
-        guard layers.count - range.count >= 1,
-              layers.enumerated().contains(where: { !range.contains($0.offset) && !$0.element.isGroup })
-        else { return }
-        layers.removeSubrange(range)
-        selectedLayerIndex = min(range.lowerBound, layers.count - 1)
-        commit("Delete Layer")
+        guard layers.indices.contains(where: { !doomed.contains($0) && !layers[$0].isGroup }) else { return }
+        let lowest = roots[0]
+        for index in doomed.sorted(by: >) { layers.remove(at: index) }
+        selectedLayerIndex = min(subtreeLowerBound(lowest, removing: doomed), layers.count - 1)
+        extraSelectedIDs = []
+        commit(roots.count > 1 ? "Delete Layers" : "Delete Layer")
         onStructureChange?()
     }
 
+    /// Copies every picked layer, each copy just above its original, and picks
+    /// the copies.
     func duplicateSelectedLayer() {
-        guard layers.indices.contains(selectedLayerIndex) else { return }
-        let range = subtreeRange(at: selectedLayerIndex)
-        let copies = layers[range].map { $0.copyLayer() }
-        layers.insert(contentsOf: copies, at: range.upperBound)
-        selectedLayerIndex = range.upperBound + copies.count - 1
-        commit("Duplicate Layer")
+        let roots = selectedRoots
+        guard !roots.isEmpty else { return }
+        var copied: [LayerID] = []
+        // Top first, so inserting above one block never moves the next.
+        for root in roots.reversed() {
+            let range = subtreeRange(at: root)
+            let copies = layers[range].map { $0.copyLayer() }
+            layers.insert(contentsOf: copies, at: range.upperBound)
+            if let head = copies.last { copied.append(head.id) }
+        }
+        pick(copied)
+        commit(roots.count > 1 ? "Duplicate Layers" : "Duplicate Layer")
+        onStructureChange?()
+    }
+
+    /// Where the block starting at `index` begins once `removed` is gone.
+    private func subtreeLowerBound(_ index: Int, removing removed: Set<Int>) -> Int {
+        let start = subtreeRange(at: index).lowerBound
+        return start - removed.filter { $0 < start }.count
+    }
+
+    /// Picks the layers with these IDs, the top-most one active.
+    private func pick(_ ids: [LayerID]) {
+        let wanted = Set(ids)
+        guard let top = layers.indices.last(where: { wanted.contains(layers[$0].id) }) else { return }
+        selectLayers(active: top, ids: wanted)
+    }
+
+    /// Lifts the blocks rooted at `roots` out of the stack and puts them back
+    /// together, in stack order, at `destination` (an insertion index in the
+    /// current stack), renested at `depth`. Copies them instead when
+    /// `copying`. Returns the IDs of the blocks' heads where they landed, or
+    /// nil when the destination is inside one of the blocks being moved.
+    @discardableResult
+    private func relocate(_ roots: [Int], to destination: Int, depth: Int,
+                          copying: Bool) -> [LayerID]? {
+        let ranges = roots.map { subtreeRange(at: $0) }
+        // A block cannot be dropped inside itself.
+        guard !ranges.contains(where: { destination > $0.lowerBound && destination < $0.upperBound })
+        else { return nil }
+        var blocks: [[Layer]] = []
+        for (root, range) in zip(roots, ranges) {
+            let shift = depth - layers[root].depth
+            let block = copying ? layers[range].map { $0.copyLayer() } : Array(layers[range])
+            for layer in block { layer.depth = max(0, layer.depth + shift) }
+            blocks.append(block)
+        }
+        var dest = destination
+        if !copying {
+            let moved = Set(ranges.flatMap { Array($0) })
+            dest -= moved.filter { $0 < destination }.count
+            for index in moved.sorted(by: >) { layers.remove(at: index) }
+        }
+        dest = dest.clamped(to: 0...layers.count)
+        layers.insert(contentsOf: blocks.flatMap { $0 }, at: dest)
+        return blocks.compactMap { $0.last?.id }
+    }
+
+    /// Moves, or copies, the picked layers to `destination` at `depth`. This is
+    /// a drag in the Layers palette landing between two rows.
+    func moveSelectedLayers(to destination: Int, depth: Int, copying: Bool = false) {
+        guard let landed = relocate(selectedRoots, to: destination, depth: depth, copying: copying),
+              !landed.isEmpty else { return }
+        pick(landed)
+        commit(copying ? (landed.count > 1 ? "Duplicate Layers" : "Duplicate Layer")
+                       : (landed.count > 1 ? "Reorder Layers" : "Reorder Layer"))
+        onStructureChange?()
+    }
+
+    /// Drops the picked layers onto the row at `target`: into it when it is a
+    /// group, and otherwise into a new group made around them and it.
+    func dropSelectedLayers(onto target: Int, copying: Bool = false) {
+        guard layers.indices.contains(target) else { return }
+        let roots = selectedRoots
+        let targetID = layers[target].id
+        // Onto one of its own, or into its own contents, means nothing.
+        for root in roots where subtreeRange(at: root).contains(target) { return }
+        guard !roots.isEmpty else { return }
+
+        if layers[target].isGroup {
+            guard let landed = relocate(roots, to: target, depth: layers[target].depth + 1,
+                                        copying: copying) else { return }
+            pick(landed)
+            commit(copying ? "Duplicate Layer" : "Reorder Layer")
+            onStructureChange?()
+            return
+        }
+
+        let hostDepth = layers[target].depth
+        guard let landed = relocate(roots, to: target + 1, depth: hostDepth + 1,
+                                    copying: copying),
+              let host = layers.firstIndex(where: { $0.id == targetID }) else { return }
+        layers[host].depth = hostDepth + 1
+        let top = host + 1 + landed.reduce(0) { total, id in
+            total + (layers.firstIndex(where: { $0.id == id }).map { subtreeRange(at: $0).count } ?? 0)
+        }
+        let header = Layer(width: width, height: height, name: nextGroupName(),
+                           kind: .group, depth: hostDepth)
+        layers.insert(header, at: top)
+        selectedLayerIndex = top
+        commit("Group Layers")
         onStructureChange?()
     }
 
     func mergeLayerDown() {
         guard layers.indices.contains(selectedLayerIndex) else { return }
+        if selectedRoots.count > 1 {
+            mergeSelectedLayers()
+            return
+        }
         if layers[selectedLayerIndex].isGroup {
             flattenGroup(at: selectedLayerIndex)
             return
@@ -411,9 +565,45 @@ final class Document {
         onStructureChange?()
     }
 
-    /// Wraps the selected layer in a new group of its own.
+    /// Merges every picked layer into one, where the top-most of them sat,
+    /// the way they look composited together.
+    func mergeSelectedLayers() {
+        let roots = selectedRoots
+        guard roots.count > 1, let top = roots.last else { return }
+        let buffer = Layer.makeContext(width: width, height: height)
+        for root in roots {
+            drawStack(subtreeRange(at: root), depth: layers[root].depth, into: buffer)
+        }
+        let merged = Layer(width: width, height: height, name: layers[top].name, depth: layers[top].depth)
+        if let img = buffer.makeImage() { merged.draw(image: img) }
+        let doomed = Set(roots.flatMap { Array(subtreeRange(at: $0)) })
+        let at = subtreeLowerBound(top, removing: doomed)
+        for index in doomed.sorted(by: >) { layers.remove(at: index) }
+        layers.insert(merged, at: at)
+        selectedLayerIndex = at
+        extraSelectedIDs = []
+        commit("Merge Layers")
+        onStructureChange?()
+    }
+
+    /// Wraps the picked layers in a new group, where the top-most of them sat.
     func groupSelected() {
         guard layers.indices.contains(selectedLayerIndex) else { return }
+        let roots = selectedRoots
+        if roots.count > 1, let top = roots.last {
+            let depth = layers[top].depth
+            guard let landed = relocate(roots, to: subtreeRange(at: top).upperBound,
+                                        depth: depth + 1, copying: false),
+                  let head = landed.last,
+                  let topIndex = layers.firstIndex(where: { $0.id == head }) else { return }
+            let header = Layer(width: width, height: height, name: nextGroupName(),
+                               kind: .group, depth: depth)
+            layers.insert(header, at: topIndex + 1)
+            selectedLayerIndex = topIndex + 1
+            commit("Group Layers")
+            onStructureChange?()
+            return
+        }
         let range = subtreeRange(at: selectedLayerIndex)
         let depth = layers[selectedLayerIndex].depth
         for l in layers[range] { l.depth += 1 }

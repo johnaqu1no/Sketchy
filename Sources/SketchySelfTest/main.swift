@@ -2100,6 +2100,109 @@ windowSection("clicking a layer row selects that layer") {
     equal(doc.selectedLayerIndex, 0, "a row still means what it shows after the stack changes")
 }
 
+section("several layers act together")
+do {
+    func stack() -> Document {
+        let doc = Document(width: 8, height: 8, background: nil)
+        doc.layers[0].name = "A"
+        for name in ["B", "C", "D"] { doc.addLayer(named: name) }
+        return doc
+    }
+    func names(_ doc: Document) -> [String] { doc.layers.map(\.name) }
+    func pick(_ doc: Document, _ picked: [String], active: String) {
+        let ids = Set(doc.layers.filter { picked.contains($0.name) }.map(\.id))
+        doc.selectLayers(active: doc.layers.firstIndex { $0.name == active }!, ids: ids)
+    }
+
+    let doc = stack()
+    pick(doc, ["B", "D"], active: "D")
+    equal(doc.selectedLayerIDs.count, 2, "two layers picked")
+    doc.selectedLayerIndex = 0
+    equal(doc.selectedLayerIDs.count, 1, "picking another active layer drops the rest")
+
+    pick(doc, ["B", "D"], active: "D")
+    doc.deleteSelectedLayer()
+    equal(names(doc), ["A", "C"], "delete takes every picked layer")
+    equal(doc.history.currentTitle, "Delete Layers", "in one step")
+    doc.undo()
+    equal(names(doc), ["A", "B", "C", "D"], "and undo brings them all back")
+
+    let dup = stack()
+    pick(dup, ["A", "C"], active: "C")
+    dup.duplicateSelectedLayer()
+    equal(names(dup), ["A", "A copy", "B", "C", "C copy", "D"], "each copy sits above its original")
+    equal(Set(dup.selectedLayerIDs.map { id in dup.layers.first { $0.id == id }!.name }),
+          ["A copy", "C copy"], "and the copies are what is picked")
+
+    let grouped = stack()
+    pick(grouped, ["A", "C"], active: "C")
+    grouped.groupSelected()
+    equal(names(grouped), ["B", "A", "C", "Group 1", "D"], "grouping gathers them where the top one was")
+    equal(grouped.layers.map(\.depth), [0, 1, 1, 0, 0], "inside the new group")
+
+    let merged = stack()
+    merged.layers[0].fill(with: .red)
+    merged.layers[2].context.setFillColor(NSColor.blue.cgColor)
+    merged.layers[2].context.fill(CGRect(x: 0, y: 0, width: 4, height: 8))
+    pick(merged, ["A", "C"], active: "C")
+    merged.mergeLayerDown()
+    equal(names(merged), ["B", "C", "D"], "merge leaves one layer where the top one was")
+    let mergedLayer = merged.layers[1]
+    check((PixelOps.sample(mergedLayer, x: 1, y: 4)?.b ?? 0) > 200, "holding the upper layer's pixels")
+    check((PixelOps.sample(mergedLayer, x: 6, y: 4)?.r ?? 0) > 200, "over the lower one's")
+
+    let moved = stack()
+    pick(moved, ["A", "B"], active: "B")
+    moved.moveSelectedLayers(to: 4, depth: 0)
+    equal(names(moved), ["C", "D", "A", "B"], "a drag carries every picked layer, in order")
+    let copied = stack()
+    pick(copied, ["A"], active: "A")
+    copied.moveSelectedLayers(to: 4, depth: 0, copying: true)
+    equal(names(copied), ["A", "B", "C", "D", "A copy"], "an option-drag copies instead")
+
+    let dropped = stack()
+    pick(dropped, ["A", "B"], active: "B")
+    dropped.dropSelectedLayers(onto: 3)
+    equal(names(dropped), ["C", "D", "A", "B", "Group 1"], "dropping onto a layer groups them all with it")
+    equal(dropped.layers.map(\.depth), [0, 1, 1, 1, 0], "all inside the new group")
+
+    // A picked group carries its members; they are not counted twice.
+    let nested = stack()
+    nested.selectedLayerIndex = 1
+    nested.groupSelected()
+    let groupIndex = nested.layers.firstIndex { $0.isGroup }!
+    nested.selectLayers(active: groupIndex, ids: [nested.layers[groupIndex].id, nested.layers[1].id])
+    equal(nested.selectedRoots, [groupIndex], "a member of a picked group rides along with it")
+}
+
+windowSection("the layers palette picks several rows and hides them in one step") {
+    let doc = Document(width: 8, height: 8, background: nil)
+    doc.addLayer(named: "Middle")
+    doc.addLayer(named: "Top")
+    let panel = LayersPanel()
+    panel.attach(doc)
+
+    panel.selectRow(0)
+    panel.extendSelection(toRow: 2)
+    equal(doc.selectedLayerIDs.count, 2, "a second row joins the first")
+
+    let steps = doc.history.entries.count
+    panel.setVisibility(rows: [0, 1, 2], visible: false)
+    check(doc.layers.allSatisfy { !$0.isVisible }, "a swipe across the eyes hides every row it crossed")
+    equal(doc.history.entries.count, steps + 1, "as one step")
+    equal(doc.history.currentTitle, "Hide Layers", "named for what it did")
+    doc.undo()
+    check(doc.layers.allSatisfy(\.isVisible), "undo shows them again")
+
+    // Hidden groups fade their members too.
+    doc.selectedLayerIndex = 1
+    doc.groupSelected()
+    let group = doc.layers.firstIndex { $0.isGroup }!
+    doc.layers[group].isVisible = false
+    check(!doc.isEffectivelyVisible(1), "a layer in a hidden group cannot be seen")
+    check(doc.isEffectivelyVisible(0), "one outside it can")
+}
+
 section("a floating paste sits in its layer's place")
 do {
     // Bottom layer gets the paste; the layer above it is opaque white, so a

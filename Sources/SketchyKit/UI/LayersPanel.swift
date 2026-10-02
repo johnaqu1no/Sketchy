@@ -1,7 +1,8 @@
 import AppKit
 
 /// Layer stack with visibility toggles, blend mode, opacity and the button bar.
-final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate,
+    NSMenuDelegate {
     private let table = LayerTableView()
     private let blendPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let opacitySlider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
@@ -53,7 +54,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.addTableColumn(col)
         table.headerView = nil
-        table.rowHeight = 40
+        table.rowHeight = LayerCellView.height
+        table.allowsMultipleSelection = true
         table.dataSource = self
         table.delegate = self
         table.backgroundColor = .clear
@@ -61,7 +63,11 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         table.target = self
         table.registerForDraggedTypes([.string])
         table.onEnter = { [weak self] in self?.beginRename() == true }
-        table.setDraggingSourceOperationMask(.move, forLocal: true)
+        // ⌥ while dragging copies instead of moving, as it does in Finder.
+        table.setDraggingSourceOperationMask([.move, .copy], forLocal: true)
+        let menu = NSMenu()
+        menu.delegate = self
+        table.menu = menu
         scroll.documentView = table
         content.addSubview(scroll)
 
@@ -172,6 +178,12 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
     }
 
+    /// Adds a row to the selection as a ⌘-click would, for tests.
+    func extendSelection(toRow row: Int) {
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: true)
+        tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+    }
+
     /// What the hint line currently reads.
     var hintText: String { hintLabel.stringValue }
 
@@ -192,9 +204,11 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         rebuildRows()
         table.reloadData()
         guard let doc = document else { return }
-        if let row = visibleRows.firstIndex(of: doc.selectedLayerIndex) {
-            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        }
+        let picked = doc.selectedLayerIDs
+        let rows = IndexSet(visibleRows.indices.filter {
+            doc.layers.indices.contains(visibleRows[$0]) && picked.contains(doc.layers[visibleRows[$0]].id)
+        })
+        table.selectRowIndexes(rows, byExtendingSelection: false)
         if let l = doc.selectedLayer {
             blendPopup.selectItem(withTitle: l.blendMode.rawValue)
             opacitySlider.doubleValue = Double(l.opacity * 100)
@@ -251,15 +265,102 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     @objc private func groupTapped() { onGroup?() }
     @objc private func ungroupTapped() { onUngroup?() }
     @objc private func propertiesTapped() { onProperties?() }
-    @objc private func doubleClicked() { onProperties?() }
+    /// Double-clicking the name renames in place; anywhere else on the row
+    /// opens the layer's properties.
+    @objc private func doubleClicked() {
+        let row = table.clickedRow
+        guard row >= 0 else { return }
+        if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? LayerCellView,
+           let event = NSApp.currentEvent {
+            let point = cell.convert(event.locationInWindow, from: nil)
+            if point.x >= cell.label.frame.minX {
+                selectRow(row)
+                beginRename()
+                return
+            }
+        }
+        onProperties?()
+    }
 
-    @objc fileprivate func visibilityToggled(_ sender: NSButton) {
+    // MARK: - Visibility
+
+    /// Shows or hides the layers on `rows` as one step. Pressing an eye and
+    /// dragging down the column comes through here once, at the end, with
+    /// every row the pointer crossed.
+    func setVisibility(rows: [Int], visible: Bool) {
         guard let doc = document else { return }
-        let index = modelIndex(forRow: sender.tag)
-        guard doc.layers.indices.contains(index) else { return }
-        doc.layers[index].isVisible = (sender.state == .on)
-        doc.onChange?()
+        let indices = rows.map(modelIndex(forRow:)).filter { doc.layers.indices.contains($0) }
+        let changing = indices.filter { doc.layers[$0].isVisible != visible }
+        guard !changing.isEmpty else { return }
+        for index in changing { doc.layers[index].isVisible = visible }
+        let plural = changing.count > 1 ? "Layers" : "Layer"
+        doc.commit(visible ? "Show \(plural)" : "Hide \(plural)")
+        reload()
         onChange?()
+    }
+
+    /// Follows the pointer down the eye column after a press, flipping each
+    /// row it passes to match the first, and records it all as one step.
+    fileprivate func beginEyeSwipe(fromRow row: Int) {
+        guard let doc = document, let window = table.window else { return }
+        let index = modelIndex(forRow: row)
+        guard doc.layers.indices.contains(index) else { return }
+        let visible = !doc.layers[index].isVisible
+        var crossed: [Int] = []
+        func touch(_ row: Int) {
+            guard row >= 0, !crossed.contains(row) else { return }
+            crossed.append(row)
+            // Shown live, so the swipe can be watched; the step comes at the end.
+            let model = modelIndex(forRow: row)
+            guard doc.layers.indices.contains(model) else { return }
+            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? LayerCellView)?
+                .showVisibility(visible)
+        }
+        touch(row)
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            touch(table.row(at: table.convert(event.locationInWindow, from: nil)))
+            if event.type == .leftMouseUp { break }
+        }
+        setVisibility(rows: crossed, visible: visible)
+    }
+
+    // MARK: - Context menu
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard let doc = document, table.clickedRow >= 0 else { return }
+        // Right-clicking outside the selection acts on the row clicked, the
+        // way Finder does.
+        if !table.selectedRowIndexes.contains(table.clickedRow) { selectRow(table.clickedRow) }
+        let several = doc.selectedRoots.count > 1
+        let layer = doc.selectedLayer
+        func add(_ title: String, _ action: Selector, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: enabled ? action : nil, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        add(several ? "Duplicate Layers" : "Duplicate Layer", #selector(duplicateTapped))
+        add("Rename…", #selector(renameFromMenu), enabled: !several)
+        add(several ? "Delete Layers" : "Delete Layer", #selector(deleteTapped))
+        menu.addItem(.separator())
+        add(several ? "Group Layers" : "Group Layer", #selector(groupTapped))
+        let inGroup = layer?.isGroup == true || doc.parentGroup(of: doc.selectedLayerIndex) != nil
+        add("Ungroup", #selector(ungroupTapped), enabled: !several && inGroup)
+        add(several ? "Merge Layers" : (layer?.isGroup == true ? "Merge Group" : "Merge Down"),
+            #selector(mergeTapped))
+        menu.addItem(.separator())
+        let anyHidden = doc.selectedRoots.contains { !doc.layers[$0].isVisible }
+        add(anyHidden ? "Show" : "Hide", #selector(toggleVisibilityFromMenu))
+        add("Layer Properties…", #selector(propertiesTapped), enabled: !several)
+    }
+
+    @objc private func renameFromMenu() { beginRename() }
+
+    @objc private func toggleVisibilityFromMenu() {
+        guard let doc = document else { return }
+        let roots = doc.selectedRoots
+        let show = roots.contains { !doc.layers[$0].isVisible }
+        setVisibility(rows: roots.compactMap { visibleRows.firstIndex(of: $0) }, visible: show)
     }
 
     // MARK: - Renaming
@@ -270,13 +371,13 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     /// nothing to rename.
     @discardableResult
     func beginRename() -> Bool {
-        guard let doc = document, table.selectedRow >= 0 else { return false }
-        let index = modelIndex(forRow: table.selectedRow)
+        guard let doc = document, let row = activeRow else { return false }
+        let index = modelIndex(forRow: row)
         guard doc.layers.indices.contains(index) else { return false }
         renamingIndex = index
         // The cell may be off-screen in a scrolled table, in which case the
         // rename still stands and only the field is missing.
-        (table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: true) as? LayerCellView)?
+        (table.view(atColumn: 0, row: row, makeIfNecessary: true) as? LayerCellView)?
             .beginEditing(delegate: self)
         return true
     }
@@ -307,9 +408,15 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
 
     /// Puts the editing row's label back to looking like a label.
     private func closeEditor() {
-        guard table.selectedRow >= 0 else { return }
-        (table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: false) as? LayerCellView)?
+        guard let row = activeRow else { return }
+        (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? LayerCellView)?
             .endEditing()
+    }
+
+    /// The row of the layer tools paint on, which is the one a rename names.
+    private var activeRow: Int? {
+        guard let doc = document else { return nil }
+        return visibleRows.firstIndex(of: doc.selectedLayerIndex)
     }
 
     /// ⏎ or clicking away keeps the new name; ⎋ leaves it alone.
@@ -333,16 +440,31 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let doc = document else { return nil }
         let layer = doc.layers[modelIndex(forRow: row)]
+        let index = modelIndex(forRow: row)
         let cell = LayerCellView()
-        cell.apply(layer)
+        cell.apply(layer, subtitle: subtitle(for: index), dimmed: !doc.isEffectivelyVisible(index))
+        cell.isActive = index == doc.selectedLayerIndex
         cell.toolTip = layer.name
-        cell.visibility.tag = row
-        cell.visibility.target = self
-        cell.visibility.action = #selector(visibilityToggled(_:))
+        cell.visibility.onPress = { [weak self] in self?.beginEyeSwipe(fromRow: row) }
         cell.disclosure.tag = row
         cell.disclosure.target = self
         cell.disclosure.action = #selector(disclosureToggled(_:))
         return cell
+    }
+
+    /// The second line of a row: what kind of layer it is and anything set
+    /// on it that the thumbnail cannot show.
+    private func subtitle(for index: Int) -> String {
+        guard let doc = document, doc.layers.indices.contains(index) else { return "" }
+        let layer = doc.layers[index]
+        var parts: [String] = []
+        if layer.isGroup {
+            let count = doc.childRange(ofGroupAt: index).filter { doc.layers[$0].depth == layer.depth + 1 }.count
+            parts.append(count == 1 ? "1 layer" : "\(count) layers")
+        }
+        if layer.blendMode != .normal { parts.append(layer.blendMode.rawValue) }
+        if layer.opacity < 1 { parts.append("\(Int((layer.opacity * 100).rounded()))%") }
+        return parts.joined(separator: " · ")
     }
 
     @objc private func disclosureToggled(_ sender: NSButton) {
@@ -365,18 +487,32 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
                    proposedRow row: Int,
                    proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
         guard draggedRow(from: info) != nil else { return [] }
-        return .move
+        return info.draggingSourceOperationMask == .copy ? .copy : .move
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo,
                    row: Int, dropOperation op: NSTableView.DropOperation) -> Bool {
-        guard let doc = document, let from = draggedRow(from: info) else { return false }
-        let source = modelIndex(forRow: from)
+        guard let from = draggedRow(from: info) else { return false }
+        return drop(fromRow: from, toRow: row, onto: op == .on,
+                    copying: info.draggingSourceOperationMask == .copy)
+    }
 
-        if op == .on {
+    /// Lands a drag of `fromRow` — and every other picked row with it — on
+    /// `toRow`: onto it when `onto`, otherwise in the gap above it.
+    @discardableResult
+    func drop(fromRow from: Int, toRow row: Int, onto: Bool, copying: Bool) -> Bool {
+        guard let doc = document else { return false }
+        let source = modelIndex(forRow: from)
+        guard doc.layers.indices.contains(source) else { return false }
+        // Dragging a row that was not picked drags that row alone.
+        if !doc.selectedLayerIDs.contains(doc.layers[source].id) {
+            doc.selectLayers(active: source, ids: [doc.layers[source].id])
+        }
+
+        if onto {
             // Dropping onto a row nests: into that group, or into a new one
-            // made around the pair.
-            doc.drop(subtreeAt: source, onto: modelIndex(forRow: row))
+            // made around them.
+            doc.dropSelectedLayers(onto: modelIndex(forRow: row), copying: copying)
         } else {
             // A gap takes the nesting of the row it sits against.
             let neighbourRow = min(row, visibleRows.count - 1)
@@ -385,7 +521,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
             let destination = row < visibleRows.count
                 ? doc.subtreeRange(at: neighbour).upperBound
                 : doc.subtreeRange(at: neighbour).lowerBound
-            doc.moveSubtree(from: source, to: destination, depth: doc.layers[neighbour].depth)
+            doc.moveSelectedLayers(to: destination, depth: doc.layers[neighbour].depth, copying: copying)
         }
         reload()
         onChange?()
@@ -400,10 +536,28 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isReloading, let doc = document, table.selectedRow >= 0 else { return }
-        let picked = modelIndex(forRow: table.selectedRow)
+        guard !isReloading, let doc = document, !table.selectedRowIndexes.isEmpty else { return }
+        let rows = table.selectedRowIndexes
+        let ids = Set(rows.map(modelIndex(forRow:)).filter { doc.layers.indices.contains($0) }
+            .map { doc.layers[$0].id })
+        // The row just clicked becomes the one tools paint on. A ⌘-click that
+        // took a row away leaves the active layer where it was if it is still
+        // picked, and otherwise falls to the top-most row left.
+        let activeRow: Int
+        if table.clickedRow >= 0, rows.contains(table.clickedRow) {
+            activeRow = table.clickedRow
+        } else if let current = visibleRows.firstIndex(of: doc.selectedLayerIndex), rows.contains(current) {
+            activeRow = current
+        } else {
+            activeRow = rows.first ?? table.selectedRow
+        }
+        let picked = modelIndex(forRow: activeRow)
         if picked != doc.selectedLayerIndex { onBeforeSelect?() }
-        doc.selectedLayerIndex = picked
+        doc.selectLayers(active: picked, ids: ids)
+        for row in rows {
+            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? LayerCellView)?
+                .isActive = row == activeRow
+        }
         if let l = doc.selectedLayer {
             blendPopup.selectItem(withTitle: l.blendMode.rawValue)
             opacitySlider.doubleValue = Double(l.opacity * 100)
@@ -443,20 +597,49 @@ final class HintingButton: NSButton {
     override func mouseExited(with event: NSEvent) { onHint?(nil) }
 }
 
-/// One row in the Layers table: thumbnail, name, visibility checkbox. Group
-/// rows are indented, show a folder, and fold their contents away.
+/// The eye at the head of a row. A press hands over to the panel, which
+/// follows the drag down the column so one swipe can hide a run of layers.
+final class EyeButton: NSButton {
+    var onPress: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) { onPress?() }
+}
+
+/// One row in the Layers table: eye, thumbnail, name and a line saying what
+/// is set on the layer. Group rows are indented, show a folder, and fold their
+/// contents away.
 final class LayerCellView: NSTableCellView {
     let thumb = NSImageView()
     let label = NSTextField(labelWithString: "")
-    let visibility = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let subtitle = NSTextField(labelWithString: "")
+    let visibility = EyeButton(image: NSImage.symbol("eye", "Visible"), target: nil, action: nil)
     let disclosure = NSButton(image: NSImage.symbol("chevron.down", "Collapse"),
                               target: nil, action: nil)
 
+    static let height: CGFloat = 44
     /// How far one level of nesting shifts a row.
-    static let indent: CGFloat = 14
+    static let indent: CGFloat = 22
+    /// Room the eye column takes at the left of every row.
+    static let eyeWidth: CGFloat = 24
+
+    /// Marks the layer tools paint on, which matters once several are picked.
+    var isActive = false {
+        didSet {
+            thumb.layer?.borderColor = isActive
+                ? NSColor.controlAccentColor.cgColor
+                : NSColor(white: 0.35, alpha: 1).cgColor
+            thumb.layer?.borderWidth = isActive ? 2 : (isGroupRow ? 0 : 1)
+        }
+    }
+    private var isGroupRow = false
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: 240, height: 40))
+        super.init(frame: NSRect(x: 0, y: 0, width: 240, height: LayerCellView.height))
+        visibility.isBordered = false
+        visibility.imagePosition = .imageOnly
+        visibility.frame = NSRect(x: 4, y: 12, width: 20, height: 20)
+        addSubview(visibility)
+
         disclosure.isBordered = false
         disclosure.imagePosition = .imageOnly
         addSubview(disclosure)
@@ -469,12 +652,15 @@ final class LayerCellView: NSTableCellView {
 
         label.font = .systemFont(ofSize: 12)
         label.autoresizingMask = [.width]
+        label.lineBreakMode = .byTruncatingTail
         addSubview(label)
         textField = label
 
-        visibility.frame = NSRect(x: 212, y: 10, width: 20, height: 20)
-        visibility.autoresizingMask = [.minXMargin]
-        addSubview(visibility)
+        subtitle.font = .systemFont(ofSize: 10)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.autoresizingMask = [.width]
+        subtitle.lineBreakMode = .byTruncatingTail
+        addSubview(subtitle)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -500,23 +686,46 @@ final class LayerCellView: NSTableCellView {
         label.delegate = nil
     }
 
-    func apply(_ layer: Layer) {
-        let x = CGFloat(layer.depth) * LayerCellView.indent
+    /// Draws the eye open or shut without touching the layer, for a swipe
+    /// still in progress.
+    func showVisibility(_ visible: Bool) {
+        visibility.image = visible
+            ? NSImage.symbol("eye", "Visible")
+            : NSImage.symbol("eye.slash", "Hidden")
+        visibility.contentTintColor = visible ? nil : .tertiaryLabelColor
+    }
+
+    /// `dimmed` fades a row that cannot be seen, whether hidden itself or
+    /// inside a hidden group.
+    func apply(_ layer: Layer, subtitle detail: String = "", dimmed: Bool = false) {
+        isGroupRow = layer.isGroup
+        let x = LayerCellView.eyeWidth + CGFloat(layer.depth) * LayerCellView.indent
         disclosure.isHidden = !layer.isGroup
-        disclosure.frame = NSRect(x: x + 2, y: 12, width: 14, height: 16)
+        disclosure.frame = NSRect(x: x + 2, y: 14, width: 14, height: 16)
         disclosure.image = NSImage.symbol(layer.isCollapsed ? "chevron.right" : "chevron.down",
                                           layer.isCollapsed ? "Expand" : "Collapse")
 
         let thumbX = x + (layer.isGroup ? 18 : 4)
-        thumb.frame = NSRect(x: thumbX, y: 3, width: 34, height: 34)
+        thumb.frame = NSRect(x: thumbX, y: 5, width: 34, height: 34)
         thumb.layer?.borderWidth = layer.isGroup ? 0 : 1
         thumb.image = layer.isGroup
             ? NSImage.symbol("folder.fill", "Group")
             : layer.thumbnail(size: NSSize(width: 34, height: 34))
 
-        label.frame = NSRect(x: thumbX + 42, y: 11, width: max(40, 206 - thumbX), height: 18)
+        let textX = thumbX + 42
+        let textWidth = max(40, bounds.width - textX - 4)
+        subtitle.stringValue = detail
+        subtitle.isHidden = detail.isEmpty
+        if detail.isEmpty {
+            label.frame = NSRect(x: textX, y: 13, width: textWidth, height: 18)
+        } else {
+            label.frame = NSRect(x: textX, y: 21, width: textWidth, height: 17)
+            subtitle.frame = NSRect(x: textX, y: 6, width: textWidth, height: 14)
+        }
         label.stringValue = layer.name
         label.font = layer.isGroup ? .boldSystemFont(ofSize: 12) : .systemFont(ofSize: 12)
-        visibility.state = layer.isVisible ? .on : .off
+        showVisibility(layer.isVisible)
+        // The eye stays readable so a hidden row can be found and shown again.
+        for view in [thumb, label, subtitle, disclosure] as [NSView] { view.alphaValue = dimmed ? 0.4 : 1 }
     }
 }
