@@ -13,6 +13,7 @@ enum ToolID: String, CaseIterable {
     case smudge, blurBrush, sharpenBrush
     case text, line
     case shapes
+    case polygonLassoSelect
 
     var title: String {
         switch self {
@@ -40,6 +41,7 @@ enum ToolID: String, CaseIterable {
         case .text:               return "Text"
         case .line:               return "Line / Curve"
         case .shapes:             return "Shapes"
+        case .polygonLassoSelect: return "Polygon Lasso"
         }
     }
 
@@ -58,7 +60,7 @@ enum ToolID: String, CaseIterable {
     /// Tools that change pixels, and so need a layer rather than a group.
     var editsPixels: Bool {
         switch self {
-        case .rectangleSelect, .ellipseSelect, .lassoSelect, .magicWand,
+        case .rectangleSelect, .ellipseSelect, .lassoSelect, .polygonLassoSelect, .magicWand,
              .moveSelection, .zoom, .pan, .colorPicker:
             return false
         default:
@@ -93,6 +95,7 @@ enum ToolID: String, CaseIterable {
         case .text:               return "textformat"
         case .line:               return "line.diagonal"
         case .shapes:             return "square.on.circle"
+        case .polygonLassoSelect: return "hexagon"
         }
     }
 
@@ -122,12 +125,13 @@ enum ToolID: String, CaseIterable {
         case .text:               return "t"
         case .line:               return "o"
         case .shapes:             return "o"
+        case .polygonLassoSelect: return "s"
         }
     }
 
     var isSelectionTool: Bool {
         switch self {
-        case .rectangleSelect, .ellipseSelect, .lassoSelect, .magicWand: return true
+        case .rectangleSelect, .ellipseSelect, .lassoSelect, .polygonLassoSelect, .magicWand: return true
         default: return false
         }
     }
@@ -135,7 +139,7 @@ enum ToolID: String, CaseIterable {
     /// Order of the two-column palette, matching the reference layout.
     static let paletteOrder: [ToolID] = [
         .rectangleSelect, .moveSelectedPixels,
-        .lassoSelect, .moveSelection,
+        .lassoSelect, .polygonLassoSelect, .moveSelection,
         .ellipseSelect, .zoom,
         .magicWand, .pan,
         .paintBucket, .gradient,

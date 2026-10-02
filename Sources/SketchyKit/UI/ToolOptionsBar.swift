@@ -118,7 +118,7 @@ final class ToolOptionsBar: NSView {
             stack.addArrangedSubview(label("Flood Mode:"))
             stack.addArrangedSubview(scope)
             if settings.tool == .paintBucket { addBlend() } else { addSelectionMode() }
-        case .rectangleSelect, .ellipseSelect, .lassoSelect:
+        case .rectangleSelect, .ellipseSelect, .lassoSelect, .polygonLassoSelect:
             addSelectionMode()
         case .gradient:
             let kinds = popup(GradientKind.allCases.map(\.rawValue), selected: settings.gradientKind.rawValue,

@@ -124,6 +124,9 @@ final class StatusBar: NSView {
         case .rectangleSelect, .ellipseSelect, .lassoSelect:
             parts = [("Drag", "Select"), ("⌥", "Add"), ("⌘", "Subtract"),
                      ("⇧", "Constrain"), ("⌘D", "Deselect")]
+        case .polygonLassoSelect:
+            parts = [("Click", "Corner"), ("Click start", "Close"), ("⏎", "Close"),
+                     ("⌫", "Undo corner"), ("⎋", "Cancel")]
         case .magicWand:
             parts = [("Click", "Select similar"), ("⌥", "Add"), ("⌘", "Subtract"),
                      ("⌥scroll", "Tolerance")]

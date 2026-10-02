@@ -206,6 +206,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     func selectTool(_ tool: ToolID) {
         // Anything still floating is put down before the tool changes under it.
         if tool != settings.tool {
+            // A polygon left half drawn means nothing to another tool.
+            engine.cancelPolygon()
             engine.commitSession()
             if tool != .moveSelectedPixels, engine.commitFloatingPixels() {
                 refreshPanels()

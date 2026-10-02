@@ -410,7 +410,8 @@ final class CanvasView: NSView {
             break
         }
         window?.makeFirstResponder(self)
-        engine.mouseDown(at: p, rightButton: right, modifiers: event.modifierFlags)
+        engine.mouseDown(at: p, rightButton: right, modifiers: event.modifierFlags,
+                         clickCount: event.clickCount)
     }
 
     override func mouseDragged(with event: NSEvent) { handleDrag(event) }
@@ -459,6 +460,7 @@ final class CanvasView: NSView {
     override func mouseMoved(with event: NSEvent) {
         let p = imagePoint(from: convert(event.locationInWindow, from: nil))
         hoverPoint = p
+        engine.pointerMoved(to: p)
         delegate?.canvas(self, didHoverAt: document.bounds.contains(p) ? p : nil)
     }
 
@@ -471,7 +473,9 @@ final class CanvasView: NSView {
         let arrows: [UInt16: (CGFloat, CGFloat)] = [123: (-1, 0), 124: (1, 0), 125: (0, -1), 126: (0, 1)]
         switch event.keyCode {
         case 36, 76:  // Return / Enter
-            if engine.session != nil {
+            if engine.polygonInProgress {
+                engine.closePolygon()
+            } else if engine.session != nil {
                 engine.commitSession()
             } else if engine.hasFloatingPixels {
                 // The status bar promises ⏎ drops them; it has to.
@@ -481,9 +485,15 @@ final class CanvasView: NSView {
                 super.keyDown(with: event)
             }
         case 51, 117: // Delete / Forward Delete
-            delegate?.canvasWantsDelete(self)
+            if engine.polygonInProgress {
+                engine.removeLastPolygonCorner()
+            } else {
+                delegate?.canvasWantsDelete(self)
+            }
         case 53:      // Escape
-            if engine.session != nil {
+            if engine.polygonInProgress {
+                engine.cancelPolygon()
+            } else if engine.session != nil {
                 engine.cancelSession()
             } else if engine.hasFloatingPixels {
                 engine.cancelFloatingPixels()

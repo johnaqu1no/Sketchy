@@ -1358,9 +1358,10 @@ do {
     equal(shortcuts.key(for: .paintbrush), "b", "the shipped key for the brush")
     equal(shortcuts.key(for: .eraser), "e", "and for the eraser")
 
-    // The three selection tools share one key and cycle in palette order.
+    // The four selection tools share one key and cycle in palette order.
     let sharing = shortcuts.tools(for: "s")
-    equal(sharing, [.rectangleSelect, .lassoSelect, .ellipseSelect], "selection tools share S")
+    equal(sharing, [.rectangleSelect, .lassoSelect, .polygonLassoSelect, .ellipseSelect],
+          "selection tools share S")
     equal(shortcuts.nextTool(for: "s", after: .rectangleSelect), .lassoSelect, "S walks to the next")
     equal(shortcuts.nextTool(for: "s", after: .ellipseSelect), .rectangleSelect, "and wraps around")
     equal(shortcuts.nextTool(for: "b", after: .eraser), .paintbrush, "a key not on the current tool jumps to it")
@@ -1701,6 +1702,50 @@ do {
     doc.expandSelection(by: 20)
     let clipped = doc.selectionPath?.boundingBoxOfPath ?? .zero
     check(clipped.minX >= 0 && clipped.minY >= 0, "expanding past the edge stops at the canvas")
+}
+
+section("the polygon lasso")
+do {
+    let doc = Document(width: 100, height: 100)
+    let settings = ToolSettings()
+    settings.tool = .polygonLassoSelect
+    let engine = ToolEngine(doc: doc, settings: settings)
+    func click(_ x: CGFloat, _ y: CGFloat, count: Int = 1, _ modifiers: NSEvent.ModifierFlags = []) {
+        engine.mouseDown(at: CGPoint(x: x, y: y), rightButton: false, modifiers: modifiers, clickCount: count)
+        engine.mouseUp(at: CGPoint(x: x, y: y), modifiers: modifiers)
+    }
+    func selected(_ x: CGFloat, _ y: CGFloat) -> Bool {
+        doc.selectionPath?.contains(CGPoint(x: x, y: y)) ?? false
+    }
+
+    // A triangle, closed by clicking back on the first corner.
+    click(10, 10); click(90, 10); click(50, 90)
+    check(engine.polygonInProgress, "corners pile up between clicks")
+    check(engine.previewIsSelection, "and the outline so far is shown")
+    engine.pointerMoved(to: CGPoint(x: 40, y: 60))
+    click(11, 11)
+    check(!engine.polygonInProgress, "clicking the first corner closes it")
+    check(selected(50, 30), "the inside of the triangle is selected")
+    check(!selected(10, 80), "outside it is not")
+
+    // A double-click closes it too, and ⌥ held on the first click adds.
+    click(60, 60, [.option]); click(95, 60); click(95, 95); click(95, 95, count: 2)
+    check(selected(50, 30) && selected(90, 70), "the second polygon is added to the first")
+
+    // Taking corners back, then cancelling, leaves the selection as it was.
+    let before = doc.selectionPath?.boundingBoxOfPath
+    click(5, 95); click(30, 95)
+    engine.removeLastPolygonCorner()
+    equal(engine.polygonPoints.count, 1, "delete takes back the last corner")
+    engine.cancelPolygon()
+    check(!engine.polygonInProgress, "escape abandons it")
+    equal(doc.selectionPath?.boundingBoxOfPath, before, "and the old selection comes back")
+
+    // ⏎ closes with what is there; two corners make no area.
+    doc.selectionPath = nil
+    click(10, 10); click(20, 10)
+    engine.closePolygon()
+    check(doc.selectionPath == nil, "two corners select nothing")
 }
 
 section("clicking clears the selection")

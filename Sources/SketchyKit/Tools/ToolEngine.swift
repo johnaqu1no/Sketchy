@@ -123,6 +123,11 @@ final class ToolEngine {
     private var dragStart: CGPoint = .zero
     private var lastPoint: CGPoint = .zero
     private var lassoPoints: [CGPoint] = []
+    /// Corners of a polygon lasso still being placed. Empty when none is.
+    private(set) var polygonPoints: [CGPoint] = []
+    /// Where the pointer is while placing corners, for the rubber-band edge.
+    private var polygonHover: CGPoint?
+    var polygonInProgress: Bool { !polygonPoints.isEmpty }
     private var cloneSource: CGPoint?
     private var cloneDelta: CGSize?
     /// Anchor for the healing brush, kept apart from the clone stamp's so
@@ -157,7 +162,14 @@ final class ToolEngine {
 
     // MARK: - Pointer plumbing
 
-    func mouseDown(at p: CGPoint, rightButton: Bool, modifiers: NSEvent.ModifierFlags) {
+    func mouseDown(at p: CGPoint, rightButton: Bool, modifiers: NSEvent.ModifierFlags,
+                   clickCount: Int = 1) {
+        // Each corner of a polygon is its own click; the mode and the
+        // selection it combines with were settled by the first one.
+        if settings.tool == .polygonLassoSelect, polygonInProgress {
+            addPolygonCorner(p, clickCount: clickCount)
+            return
+        }
         usesSecondary = rightButton
         activeSelectionMode = ToolEngine.selectionMode(for: modifiers, default: settings.selectionMode)
         dragStart = p
@@ -232,6 +244,12 @@ final class ToolEngine {
         case .lassoSelect:
             clearSelectionIfReplacing()
             lassoPoints = [p]
+        case .polygonLassoSelect:
+            clearSelectionIfReplacing()
+            polygonPoints = [p]
+            polygonHover = p
+            updatePolygonPreview()
+            isDragging = false
         case .shapes, .line:
             beginShapeInteraction(at: p, modifiers: modifiers)
         case .moveSelection:
@@ -317,6 +335,7 @@ final class ToolEngine {
     }
 
     func mouseDragged(to p: CGPoint, modifiers: NSEvent.ModifierFlags) {
+        if polygonInProgress { pointerMoved(to: p); return }
         guard isDragging else { return }
         defer { lastPoint = p; onNeedsDisplay?() }
 
@@ -360,8 +379,12 @@ final class ToolEngine {
     func mouseUp(at p: CGPoint, modifiers: NSEvent.ModifierFlags) {
         defer {
             isDragging = false
-            previewPath = nil
-            previewStyle = .shape
+            if polygonInProgress {
+                updatePolygonPreview()
+            } else {
+                previewPath = nil
+                previewStyle = .shape
+            }
             onNeedsDisplay?()
         }
         guard isDragging else {
@@ -1130,6 +1153,94 @@ final class ToolEngine {
         doc.selectionPath = nil
         doc.commit("Deselect")
         doc.onChange?()
+    }
+
+    // MARK: - Polygon lasso
+
+    private func addPolygonCorner(_ p: CGPoint, clickCount: Int) {
+        // Clicking back on the first corner closes the shape, as does a
+        // double-click anywhere.
+        let slop = max(3, 8 / viewScale)
+        if let first = polygonPoints.first, polygonPoints.count >= 3,
+           hypot(p.x - first.x, p.y - first.y) <= slop {
+            closePolygon()
+            return
+        }
+        if clickCount >= 2 {
+            closePolygon()
+            return
+        }
+        polygonPoints.append(p)
+        polygonHover = p
+        updatePolygonPreview()
+        onNeedsDisplay?()
+    }
+
+    /// Follows the pointer with the edge that the next click would add.
+    func pointerMoved(to p: CGPoint) {
+        guard polygonInProgress, settings.tool == .polygonLassoSelect else { return }
+        polygonHover = p
+        updatePolygonPreview()
+        onNeedsDisplay?()
+    }
+
+    /// Closes the polygon into a selection. Fewer than three corners make no
+    /// area, which is the same as cancelling.
+    func closePolygon() {
+        guard polygonInProgress else { return }
+        let corners = polygonPoints
+        clearPolygon()
+        guard corners.count >= 3 else {
+            restorePolygonStart()
+            return
+        }
+        let path = CGMutablePath()
+        path.addLines(between: corners)
+        path.closeSubpath()
+        applySelection(path)
+        onNeedsDisplay?()
+    }
+
+    /// Takes back the last corner; taking back the only one cancels.
+    func removeLastPolygonCorner() {
+        guard polygonInProgress else { return }
+        polygonPoints.removeLast()
+        if polygonPoints.isEmpty {
+            cancelPolygon()
+        } else {
+            updatePolygonPreview()
+            onNeedsDisplay?()
+        }
+    }
+
+    /// Abandons the polygon, putting back whatever was selected before it.
+    func cancelPolygon() {
+        guard polygonInProgress else { return }
+        clearPolygon()
+        restorePolygonStart()
+        onNeedsDisplay?()
+    }
+
+    private func clearPolygon() {
+        polygonPoints = []
+        polygonHover = nil
+        previewPath = nil
+        previewStyle = .shape
+    }
+
+    /// A replacing polygon dropped the old selection at the first click; a
+    /// polygon that never closed hands it back.
+    private func restorePolygonStart() {
+        guard doc.selectionPath == nil, startedSelection != nil else { return }
+        doc.selectionPath = startedSelection
+        doc.onChange?()
+    }
+
+    private func updatePolygonPreview() {
+        let path = CGMutablePath()
+        path.addLines(between: polygonPoints + (polygonHover.map { [$0] } ?? []))
+        previewPath = path.copy()
+        previewStyle = .selection
     }
 
     private func lassoPath(closed: Bool) -> CGPath {
