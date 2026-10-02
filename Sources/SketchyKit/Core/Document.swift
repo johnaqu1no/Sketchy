@@ -1357,6 +1357,48 @@ final class Document {
         selectionMask?.clip(ctx)
     }
 
+    // MARK: - Load selection
+
+    /// Selects what a layer shows, or what its mask lets through, combined
+    /// with the current selection by `mode`. A group selects everything in
+    /// it, as composited.
+    func loadSelection(fromLayerAt index: Int, mask: Bool, mode: SelectionMode = .replace) {
+        guard layers.indices.contains(index) else { return }
+        let layer = layers[index]
+        let source: Layer
+        if mask, let m = layer.mask {
+            source = m
+        } else if layer.isGroup {
+            source = Layer(width: width, height: height, name: "group")
+            drawStack(childRange(ofGroupAt: index), depth: layer.depth + 1, into: source.context)
+        } else {
+            source = layer
+        }
+        let region = PixelOps.solidRegion(in: source, luminance: mask && layer.mask != nil)
+        let traced = region.map { PixelOps.path(from: $0.flags, width: width, height: height, bounds: $0.bounds) }
+            ?? CGMutablePath()
+
+        let combined: CGPath
+        if let existing = selectionPath, mode != .replace {
+            switch mode {
+            case .union:     combined = existing.union(traced)
+            case .exclude:   combined = existing.subtracting(traced)
+            case .intersect: combined = existing.intersection(traced)
+            case .xor:       combined = existing.symmetricDifference(traced)
+            case .replace:   combined = traced
+            }
+        } else {
+            combined = traced
+        }
+        let before = selectionPath
+        let keptFeather = mode == .replace ? 0 : selectionFeather
+        selectionPath = canonicalSelection(combined)
+        if selectionPath != nil { selectionFeather = keptFeather }
+        guard selectionPath != nil || before != nil else { return }
+        commit(mask ? "Load Mask as Selection" : "Load Layer as Selection")
+        onChange?()
+    }
+
     // MARK: - Modify selection
 
     /// Softens the selection's edge over `radius` pixels.

@@ -2403,6 +2403,57 @@ do {
     check(grouped.selectedRasterLayer?.isMask == true, "and a group's mask can be painted")
 }
 
+section("load a layer or mask as a selection")
+do {
+    let doc = Document(width: 40, height: 40)
+    doc.addLayer(named: "Shape")
+    doc.selectedLayer?.context.setFillColor(NSColor.red.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 10, y: 5, width: 15, height: 20))
+    func selected(_ x: CGFloat, _ y: CGFloat) -> Bool {
+        doc.selectionPath?.contains(CGPoint(x: x, y: y)) ?? false
+    }
+
+    doc.loadSelection(fromLayerAt: 1, mask: false)
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, CGRect(x: 10, y: 5, width: 15, height: 20),
+          "a layer's pixels become the selection")
+    equal(doc.history.currentTitle, "Load Layer as Selection", "as a step")
+
+    // A mask selects what it lets through.
+    doc.addLayerMask(hideAll: true)
+    doc.selectionPath = nil
+    doc.selectedRasterLayer?.context.setFillColor(NSColor.white.cgColor)
+    doc.selectedRasterLayer?.context.fill(CGRect(x: 0, y: 30, width: 40, height: 10))
+    doc.loadSelection(fromLayerAt: 1, mask: true)
+    check(selected(20, 35), "the mask's white is selected")
+    check(!selected(20, 10), "its black is not")
+
+    // Modes combine with what is already selected.
+    doc.loadSelection(fromLayerAt: 1, mask: false, mode: .union)
+    check(selected(20, 35) && selected(15, 10), "⇧ adds the layer to the mask's selection")
+    doc.loadSelection(fromLayerAt: 1, mask: false, mode: .exclude)
+    check(selected(20, 35) && !selected(15, 10), "⌥ takes it away again")
+
+    // An empty layer selects nothing rather than leaving an empty outline.
+    doc.addLayer(named: "Empty")
+    doc.loadSelection(fromLayerAt: 2, mask: false)
+    check(doc.selectionPath == nil, "loading an empty layer leaves nothing selected")
+}
+
+section("tracing a busy outline stays fast")
+do {
+    // A checkerboard is one loop per square: the old tracer searched every
+    // corner for each loop and took quadratic time on exactly this.
+    let side = 400
+    var flags = [Bool](repeating: false, count: side * side)
+    for y in 0..<side { for x in 0..<side where (x + y) % 2 == 0 { flags[y * side + x] = true } }
+    let started = Date()
+    let path = PixelOps.path(from: flags, width: side, height: side)
+    let seconds = Date().timeIntervalSince(started)
+    check(seconds < 3, "80,000 squares trace in \(String(format: "%.2f", seconds))s")
+    check(path.contains(CGPoint(x: 0.5, y: 0.5)), "the first square is inside")
+    check(!path.contains(CGPoint(x: 1.5, y: 0.5)), "its neighbour is not")
+}
+
 section("clipping masks")
 do {
     // White background, a red square in the middle, and a blue layer over

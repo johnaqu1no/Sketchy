@@ -89,6 +89,21 @@ final class PaletteHub {
         layersPanel.onGroup = { [weak controller] in controller?.groupLayer(nil) }
         layersPanel.onUngroup = { [weak controller] in controller?.ungroupLayer(nil) }
         layersPanel.onProperties = { [weak controller] in controller?.showLayerProperties() }
+        // ⌘-click a thumbnail, Photoshop style: ⇧ adds, ⌥ takes away, both
+        // intersect.
+        layersPanel.onLoadSelection = { [weak controller] index, mask, flags in
+            guard let controller else { return }
+            controller.commitPendingEdits()
+            let mode: SelectionMode
+            switch (flags.contains(.shift), flags.contains(.option)) {
+            case (true, true):   mode = .intersect
+            case (true, false):  mode = .union
+            case (false, true):  mode = .exclude
+            case (false, false): mode = .replace
+            }
+            controller.doc.loadSelection(fromLayerAt: index, mask: mask, mode: mode)
+            controller.refreshPanels()
+        }
         layersPanel.onBeforeSelect = { [weak controller] in
             controller?.commitPendingEdits()
         }

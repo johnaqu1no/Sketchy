@@ -168,9 +168,15 @@ enum PixelOps {
 
         // Boundary edges, wound so that each one leads into the next.
         var next: [Int: [Int]] = [:]
+        // Corners in the order they first got an edge, so finding where the
+        // next loop starts is a step along a list rather than a search of
+        // every corner, which made a detailed outline take quadratic time.
+        var starts: [Int] = []
         func corner(_ x: Int, _ y: Int) -> Int { y * (w + 1) + x }
         func addEdge(_ from: (Int, Int), _ to: (Int, Int)) {
-            next[corner(from.0, from.1), default: []].append(corner(to.0, to.1))
+            let key = corner(from.0, from.1)
+            if next[key] == nil { starts.append(key) }
+            next[key, default: []].append(corner(to.0, to.1))
         }
 
         for y in firstY...lastY {
@@ -183,7 +189,13 @@ enum PixelOps {
         }
 
         let path = CGMutablePath()
-        while let start = next.first(where: { !$0.value.isEmpty })?.key {
+        var startIndex = 0
+        while startIndex < starts.count {
+            let start = starts[startIndex]
+            guard let remaining = next[start], !remaining.isEmpty else {
+                startIndex += 1
+                continue
+            }
             var loop: [Int] = [start]
             var current = start
             // Follow edges until the walk returns to where it began.
@@ -202,6 +214,34 @@ enum PixelOps {
             path.closeSubpath()
         }
         return path.copy() ?? path
+    }
+
+    /// The pixels of a layer that are at least half there: its opaque part,
+    /// or for a mask the part it shows. This is what ⌘-clicking a thumbnail
+    /// selects.
+    static func solidRegion(in layer: Layer, luminance: Bool) -> MaskedRegion? {
+        guard let d = layer.pixels else { return nil }
+        let w = layer.width, h = layer.height, stride = layer.bytesPerRow
+        var mask = [Bool](repeating: false, count: w * h)
+        var minX = Int.max, maxX = Int.min, minY = Int.max, maxY = Int.min
+        mask.withUnsafeMutableBufferPointer { buffer in
+            guard let flags = buffer.baseAddress else { return }
+            for y in 0..<h {
+                let row = (h - 1 - y) * stride
+                for x in 0..<w {
+                    // A mask is opaque grey, so its green channel is its value;
+                    // anything else goes by alpha.
+                    let value = d[row + x * 4 + (luminance ? 1 : 3)]
+                    guard value >= 128 else { continue }
+                    flags[y * w + x] = true
+                    minX = min(minX, x); maxX = max(maxX, x)
+                    minY = min(minY, y); maxY = max(maxY, y)
+                }
+            }
+        }
+        guard minX <= maxX else { return MaskedRegion(flags: mask, bounds: .zero) }
+        return MaskedRegion(flags: mask, bounds: CGRect(x: minX, y: minY,
+                                                        width: maxX - minX + 1, height: maxY - minY + 1))
     }
 
     /// Drops the points in the middle of a straight run, so a rectangular
