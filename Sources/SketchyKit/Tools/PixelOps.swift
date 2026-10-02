@@ -229,7 +229,7 @@ enum PixelOps {
                           color: NSColor,
                           tolerance: CGFloat,
                           contiguous: Bool,
-                          clip: CGPath?,
+                          clip: SelectionMask?,
                           blend: CGBlendMode = .normal,
                           alpha: CGFloat = 1.0) {
         guard let masked = maskedRegion(in: layer, seedX: seedX, seedY: seedY,
@@ -249,7 +249,7 @@ enum PixelOps {
         layer.markEdited(masked.bounds)
         let ctx = layer.rawContext
         ctx.saveGState()
-        if let clip { ctx.addPath(clip); ctx.clip() }
+        clip?.clip(ctx)
         ctx.addPath(region)
         ctx.clip()
         ctx.setAlpha(alpha)
@@ -397,7 +397,7 @@ extension PixelOps {
                      diameter: CGFloat,
                      offset: CGSize,
                      hardness: CGFloat,
-                     clip: CGPath? = nil) -> Bool {
+                     clip: SelectionMask? = nil) -> Bool {
         let radius = max(1, Int((diameter / 2).rounded()))
         // A margin outside the dab, which is where the tone is read from.
         let margin = max(2, radius / 3)
@@ -445,8 +445,11 @@ extension PixelOps {
                 var weight = distance <= Float(core) ? 1
                     : 1 - (distance - Float(core)) / (1 - Float(core))
                 weight = weight.clamped(to: 0...1)
-                if let clip, !clip.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5),
-                                            using: .winding) { continue }
+                // A feathered selection lets the dab in only partly at its edge.
+                if let clip {
+                    weight *= clip.amount(x: x, y: y)
+                    guard weight > 0 else { continue }
+                }
 
                 let o = (layer.height - 1 - y) * stride + x * 4
                 var healed = [Float](repeating: 0, count: 4)
@@ -537,7 +540,7 @@ extension PixelOps {
                          hardness: CGFloat,
                          amount: CGFloat = 1,
                          margin extra: Int = 0,
-                         clip: CGPath? = nil,
+                         clip: SelectionMask? = nil,
                          target: (Patch, Int, Int) -> [Float]) -> Bool {
         let radius = max(1, Int((diameter / 2).rounded()))
         let outer = radius + extra
@@ -563,8 +566,11 @@ extension PixelOps {
                     : 1 - (distance - Float(core)) / (1 - Float(core))
                 weight = weight.clamped(to: 0...1) * strength
                 guard weight > 0 else { continue }
-                if let clip, !clip.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5),
-                                            using: .winding) { continue }
+                // A feathered selection lets the dab in only partly at its edge.
+                if let clip {
+                    weight *= clip.amount(x: x, y: y)
+                    guard weight > 0 else { continue }
+                }
 
                 let wanted = target(dest, col, row)
                 let o = (layer.height - 1 - y) * stride + x * 4
@@ -583,7 +589,7 @@ extension PixelOps {
     /// Softens what the tip covers.
     @discardableResult
     static func blurDab(layer: Layer, at center: CGPoint, diameter: CGFloat,
-                        strength: CGFloat, hardness: CGFloat, clip: CGPath? = nil) -> Bool {
+                        strength: CGFloat, hardness: CGFloat, clip: SelectionMask? = nil) -> Bool {
         let radius = max(1, Int((diameter / 2).rounded()))
         let reach = max(1, radius / 2)
         var blurred: Patch?
@@ -599,7 +605,7 @@ extension PixelOps {
     /// Adds back the detail a blur would remove, which is what sharpening is.
     @discardableResult
     static func sharpenDab(layer: Layer, at center: CGPoint, diameter: CGFloat,
-                           strength: CGFloat, hardness: CGFloat, clip: CGPath? = nil) -> Bool {
+                           strength: CGFloat, hardness: CGFloat, clip: SelectionMask? = nil) -> Bool {
         let radius = max(1, Int((diameter / 2).rounded()))
         let reach = max(1, radius / 2)
         var blurred: Patch?
@@ -618,7 +624,7 @@ extension PixelOps {
     /// dab pastes what sat under the previous one.
     @discardableResult
     static func smudgeDab(layer: Layer, from a: CGPoint, to b: CGPoint, diameter: CGFloat,
-                          strength: CGFloat, hardness: CGFloat, clip: CGPath? = nil) -> Bool {
+                          strength: CGFloat, hardness: CGFloat, clip: SelectionMask? = nil) -> Bool {
         let radius = max(1, Int((diameter / 2).rounded()))
         let side = radius * 2 + 1
         let pickup = CGRect(x: Int(a.x.rounded()) - radius, y: Int(a.y.rounded()) - radius,

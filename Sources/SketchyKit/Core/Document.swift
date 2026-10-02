@@ -18,7 +18,12 @@ final class Document {
     /// the active layer alone.
     var extraSelectedIDs: Set<LayerID> = []
     /// Active selection in image coordinates; nil means "everything".
-    var selectionPath: CGPath?
+    var selectionPath: CGPath? {
+        didSet { if selectionPath == nil { selectionFeather = 0 } }
+    }
+    /// How soft the selection's edge is, in pixels. A fresh selection starts
+    /// hard; Feather Selection sets it.
+    var selectionFeather: CGFloat = 0
     var fileURL: URL?
     var isDirty: Bool = false
 
@@ -131,7 +136,7 @@ final class Document {
         for layer in layers { recordedVersions[layer.id] = layer.contentVersion }
         return HistorySnapshot(title: title, layers: states,
                                selectedIndex: selectedLayerIndex, width: width, height: height,
-                               selection: selectionPath)
+                               selection: selectionPath, selectionFeather: selectionFeather)
     }
 
     /// The layers now match the newest step: the next edit is measured from
@@ -217,6 +222,7 @@ final class Document {
         }
         selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
         selectionPath = snap.selection
+        selectionFeather = snap.selectionFeather
         appliedStep = history.cursor
         isDirty = true
         onStructureChange?()
@@ -266,6 +272,7 @@ final class Document {
         }
         selectedLayerIndex = min(snap.selectedIndex, layers.count - 1)
         selectionPath = snap.selection
+        selectionFeather = snap.selectionFeather
         appliedStep = target
         isDirty = true
         onStructureChange?()
@@ -876,10 +883,8 @@ final class Document {
     @discardableResult
     func eraseSelection() -> Bool {
         guard let layer = selectedRasterLayer else { return false }
-        let region = selectionPath ?? CGPath(rect: bounds, transform: nil)
         layer.context.saveGState()
-        layer.context.addPath(region)
-        layer.context.clip()
+        clipToSelection(layer.context)
         layer.context.clear(bounds)
         layer.context.restoreGState()
         commit(selectionPath == nil ? "Erase Layer" : "Erase Selection")
@@ -1014,8 +1019,9 @@ final class Document {
     }
 
     func selectAll() {
-        guard selectionPath?.boundingBoxOfPath != bounds else { return }
+        guard selectionPath?.boundingBoxOfPath != bounds || selectionFeather > 0 else { return }
         selectionPath = CGPath(rect: bounds, transform: nil)
+        selectionFeather = 0
         commit("Select All")
         onChange?()
     }
@@ -1023,6 +1029,7 @@ final class Document {
     func deselect() {
         guard selectionPath != nil else { return }
         selectionPath = nil
+        selectionFeather = 0
         commit("Deselect")
         onChange?()
     }
@@ -1051,11 +1058,57 @@ final class Document {
         return keptBox.isNull || keptBox.isEmpty ? nil : kept
     }
 
+    private var cachedMask: SelectionMask?
+
+    /// The selection as edits apply it, soft edge and all. Built once per
+    /// selection: a feathered one costs a blur of the whole canvas.
+    var selectionMask: SelectionMask? {
+        guard let path = selectionPath else { return nil }
+        if let cached = cachedMask, cached.path === path, cached.feather == selectionFeather,
+           cached.width == width, cached.height == height {
+            return cached
+        }
+        let mask = SelectionMask(path: path, feather: selectionFeather, width: width, height: height)
+        cachedMask = mask
+        return mask
+    }
+
+    /// How far past its outline a feathered selection still reaches, in
+    /// pixels. Two blur radii cover everything visible of the fade.
+    var selectionReach: CGFloat { (selectionFeather * 2).rounded(.up) }
+
     /// Applies the current selection as a clip on a context (image coordinates).
     func clipToSelection(_ ctx: CGContext) {
-        guard let sel = selectionPath else { return }
-        ctx.addPath(sel)
-        ctx.clip()
+        selectionMask?.clip(ctx)
+    }
+
+    // MARK: - Modify selection
+
+    /// Softens the selection's edge over `radius` pixels.
+    func featherSelection(by radius: CGFloat) {
+        guard selectionPath != nil, radius > 0 else { return }
+        // Feathering twice adds up the way two blurs do.
+        selectionFeather = (selectionFeather * selectionFeather + radius * radius).squareRoot()
+        commit("Feather Selection")
+        onChange?()
+    }
+
+    /// Grows the selection outward by `distance` pixels.
+    func expandSelection(by distance: CGFloat) {
+        guard let sel = selectionPath, distance > 0 else { return }
+        selectionPath = canonicalSelection(sel.expanded(by: distance))
+        commit("Expand Selection")
+        onChange?()
+    }
+
+    /// Shrinks the selection inward by `distance` pixels. Shrinking it away
+    /// entirely leaves nothing selected.
+    func contractSelection(by distance: CGFloat) {
+        guard let sel = selectionPath, distance > 0 else { return }
+        selectionPath = canonicalSelection(sel.contracted(by: distance))
+        if selectionPath == nil { selectionFeather = 0 }
+        commit("Contract Selection")
+        onChange?()
     }
 
     // MARK: - IO

@@ -218,7 +218,7 @@ final class ToolEngine {
                                color: strokeColor,
                                tolerance: settings.tolerance,
                                contiguous: !settings.fillGlobally,
-                               clip: doc.selectionPath,
+                               clip: doc.selectionMask,
                                blend: settings.blendMode.cgBlendMode)
             pendingCommitTitle = "Paint Bucket"
         case .colorPicker:
@@ -900,7 +900,7 @@ final class ToolEngine {
             }
             guard let offset else { continue }
             PixelOps.heal(layer: layer, at: p, diameter: diameter, offset: offset,
-                          hardness: settings.hardness, clip: doc.selectionPath)
+                          hardness: settings.hardness, clip: doc.selectionMask)
         }
     }
 
@@ -920,15 +920,15 @@ final class ToolEngine {
             case .smudge:
                 PixelOps.smudgeDab(layer: layer, from: previous, to: p, diameter: diameter,
                                    strength: settings.brushStrength, hardness: settings.hardness,
-                                   clip: doc.selectionPath)
+                                   clip: doc.selectionMask)
             case .blurBrush:
                 PixelOps.blurDab(layer: layer, at: p, diameter: diameter,
                                  strength: settings.brushStrength, hardness: settings.hardness,
-                                 clip: doc.selectionPath)
+                                 clip: doc.selectionMask)
             default:
                 PixelOps.sharpenDab(layer: layer, at: p, diameter: diameter,
                                     strength: settings.brushStrength, hardness: settings.hardness,
-                                    clip: doc.selectionPath)
+                                    clip: doc.selectionMask)
             }
             previous = p
         }
@@ -1191,6 +1191,9 @@ final class ToolEngine {
             doc.onChange?()
             return
         }
+        // A new selection starts with a hard edge; adding to or taking from
+        // a feathered one keeps its softness.
+        if mode == .replace || startedSelection == nil { doc.selectionFeather = 0 }
         doc.selectionPath = kept
         // A selection is an edit like any other: it belongs in the history so
         // it can be undone and stepped back to.
@@ -1215,14 +1218,13 @@ final class ToolEngine {
             return
         }
         let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
-        let box = sel.boundingBoxOfPath.integral.intersection(doc.bounds)
+        let box = sel.boundingBoxOfPath.insetBy(dx: -doc.selectionReach, dy: -doc.selectionReach).integral.intersection(doc.bounds)
         guard !box.isEmpty else { return }
 
         let cut = Layer(width: Int(box.width), height: Int(box.height), name: "float")
         cut.context.saveGState()
         cut.context.translateBy(x: -box.minX, y: -box.minY)
-        cut.context.addPath(sel)
-        cut.context.clip()
+        doc.clipToSelection(cut.context)
         cut.context.draw(full, in: doc.bounds)
         cut.context.restoreGState()
         floatingImage = cut.image
@@ -1243,8 +1245,7 @@ final class ToolEngine {
 
         // Erase the lifted pixels from the source layer.
         layer.context.saveGState()
-        layer.context.addPath(sel)
-        layer.context.clip()
+        doc.clipToSelection(layer.context)
         layer.context.clear(doc.bounds)
         layer.context.restoreGState()
     }
@@ -1605,7 +1606,7 @@ final class ToolEngine {
         if let scratch = strokeScratch, let image = scratch.image {
             ctx.saveGState()
             ctx.setBlendMode(settings.blendMode.cgBlendMode)
-            if let sel = doc.selectionPath { ctx.addPath(sel); ctx.clip() }
+            doc.clipToSelection(ctx)
             ctx.draw(image, in: strokeScratchRect)
             ctx.restoreGState()
         }

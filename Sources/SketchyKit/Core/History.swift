@@ -51,6 +51,7 @@ struct HistorySnapshot {
     /// The selection as it stood, so undo puts back what was selected as well
     /// as what was painted.
     var selection: CGPath?
+    var selectionFeather: CGFloat = 0
 
     /// Roughly what this snapshot costs to keep.
     var bytes: Int { layers.reduce(0) { $0 + $1.pixels.bytes } }
@@ -98,7 +99,8 @@ final class HistoryManager {
         entries[survivor] = HistorySnapshot(title: old.title, layers: states,
                                             selectedIndex: old.selectedIndex,
                                             width: old.width, height: old.height,
-                                            selection: old.selection)
+                                            selection: old.selection,
+                                            selectionFeather: old.selectionFeather)
         entries.removeFirst(removable)
         resolvedCache.removeAll()
         return removable

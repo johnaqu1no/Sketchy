@@ -14,7 +14,7 @@ enum ImageEffects {
         .outputColorSpace: workingSpace
     ])
 
-    static func apply(_ transform: (CIImage) -> CIImage?, to layer: Layer, selection: CGPath?) -> Bool {
+    static func apply(_ transform: (CIImage) -> CIImage?, to layer: Layer, selection: SelectionMask?) -> Bool {
         guard let src = layer.image else { return false }
         let input = CIImage(cgImage: src)
         guard let output = transform(input) else { return false }
@@ -23,7 +23,7 @@ enum ImageEffects {
                                                    format: .RGBA8, colorSpace: workingSpace) else { return false }
         let ctx = layer.context
         ctx.saveGState()
-        if let selection { ctx.addPath(selection); ctx.clip() }
+        selection?.clip(ctx)
         ctx.setBlendMode(.copy)
         ctx.draw(result, in: rect)
         ctx.restoreGState()

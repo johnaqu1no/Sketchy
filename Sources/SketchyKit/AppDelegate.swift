@@ -234,6 +234,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(item("Select All", #selector(MainWindowController.selectAll(_:)), "a"))
         edit.addItem(item("Deselect All", #selector(MainWindowController.deselect(_:)), "d"))
         edit.addItem(item("Invert Selection", #selector(MainWindowController.invertSelection(_:)), "i"))
+        let modify = NSMenu(title: "Modify Selection")
+        modify.addItem(item("Expand\u{2026}", #selector(MainWindowController.expandSelection(_:)), ""))
+        modify.addItem(item("Contract\u{2026}", #selector(MainWindowController.contractSelection(_:)), ""))
+        // ⇧F6, as in Photoshop.
+        let f6 = String(Character(UnicodeScalar(UInt16(NSF6FunctionKey))!))
+        modify.addItem(item("Feather\u{2026}", #selector(MainWindowController.featherSelection(_:)), f6, [.shift]))
+        addSubmenu(modify, to: edit)
         addSubmenu(edit, to: main)
 
         // View

@@ -616,13 +616,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     @objc func copy(_ sender: Any?) {
         guard let layer = doc.selectedLayer, let img = layer.image else { return }
         let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
-        let box = sel.boundingBoxOfPath.integral.intersection(doc.bounds)
+        let box = sel.boundingBoxOfPath.insetBy(dx: -doc.selectionReach, dy: -doc.selectionReach).integral.intersection(doc.bounds)
         guard !box.isEmpty else { return }
         let cut = Layer(width: Int(box.width), height: Int(box.height), name: "clip")
         cut.context.saveGState()
         cut.context.translateBy(x: -box.minX, y: -box.minY)
-        cut.context.addPath(sel)
-        cut.context.clip()
+        doc.clipToSelection(cut.context)
         cut.context.draw(img, in: doc.bounds)
         cut.context.restoreGState()
         clipboardImage = cut.image
@@ -745,10 +744,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
 
     @objc func fillSelection(_ sender: Any?) {
         guard let layer = doc.selectedRasterLayer else { return groupWarning() }
-        let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
         layer.context.saveGState()
-        layer.context.addPath(sel)
-        layer.context.clip()
+        doc.clipToSelection(layer.context)
         layer.context.setFillColor(colorsPanel.primary.srgb.cgColor)
         layer.context.fill(doc.bounds)
         layer.context.restoreGState()
@@ -759,6 +756,42 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     @objc override func selectAll(_ sender: Any?) { doc.selectAll() }
     @objc func deselect(_ sender: Any?) { doc.deselect() }
     @objc func invertSelection(_ sender: Any?) { doc.invertSelection() }
+
+    /// The last amount each Modify command used, so repeating one is a ⏎.
+    private static var lastModifyAmounts: [String: Double] = [:]
+
+    private func modifySelection(_ title: String, label: String, default value: Double,
+                                 _ apply: @escaping (CGFloat) -> Void) {
+        commitPendingEdits()
+        guard doc.selectionPath != nil, let window else { return }
+        Dialogs.pixels(title: title, label: label,
+                       value: MainWindowController.lastModifyAmounts[title] ?? value,
+                       in: window) { [weak self] amount in
+            guard let self, let amount, amount > 0 else { return }
+            MainWindowController.lastModifyAmounts[title] = amount
+            apply(CGFloat(amount))
+            self.canvas.refresh()
+            self.refreshPanels()
+        }
+    }
+
+    @objc func featherSelection(_ sender: Any?) {
+        modifySelection("Feather Selection", label: "Radius", default: 4) { [weak self] in
+            self?.doc.featherSelection(by: $0)
+        }
+    }
+
+    @objc func expandSelection(_ sender: Any?) {
+        modifySelection("Expand Selection", label: "Expand by", default: 2) { [weak self] in
+            self?.doc.expandSelection(by: $0)
+        }
+    }
+
+    @objc func contractSelection(_ sender: Any?) {
+        modifySelection("Contract Selection", label: "Contract by", default: 2) { [weak self] in
+            self?.doc.contractSelection(by: $0)
+        }
+    }
 
     // MARK: - Image menu
 
@@ -981,7 +1014,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
 
         func apply(_ values: [Double]) {
             layer.restore(from: snapshot)
-            _ = ImageEffects.apply(build(values), to: layer, selection: doc.selectionPath)
+            _ = ImageEffects.apply(build(values), to: layer, selection: doc.selectionMask)
             canvas.refresh()
         }
 

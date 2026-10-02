@@ -1640,6 +1640,69 @@ do {
     check(doc.selectionPath == nil, "inverting everything leaves nothing selected")
 }
 
+section("feathered, expanded and contracted selections")
+do {
+    let doc = Document(width: 100, height: 100)
+    doc.selectionPath = CGPath(rect: CGRect(x: 30, y: 30, width: 40, height: 40), transform: nil)
+    doc.featherSelection(by: 8)
+    equal(doc.selectionFeather, 8, "feather is kept with the selection")
+    equal(doc.history.currentTitle, "Feather Selection", "and is a step")
+
+    let mask = doc.selectionMask!
+    near(CGFloat(mask.amount(x: 50, y: 50)), 1, 0.02, "the middle is fully selected")
+    near(CGFloat(mask.amount(x: 30, y: 50)), 0.5, 0.15, "the outline is half selected")
+    near(CGFloat(mask.amount(x: 5, y: 50)), 0, 0.02, "well outside is not selected")
+
+    // Filling a feathered selection fades out across the edge.
+    doc.selectedLayer.map { layer in
+        layer.context.saveGState()
+        doc.clipToSelection(layer.context)
+        layer.context.setFillColor(NSColor.black.cgColor)
+        layer.context.fill(doc.bounds)
+        layer.context.restoreGState()
+    }
+    let inside = Int(pixel(doc, 50, 50)?.g ?? 255)
+    let edge = Int(pixel(doc, 30, 50)?.g ?? 0)
+    let outside = Int(pixel(doc, 5, 50)?.g ?? 0)
+    check(inside < 10, "the fill is solid inside — got \(inside)")
+    check(edge > 60 && edge < 200, "partial on the edge — got \(edge)")
+    check(outside > 245, "and absent outside — got \(outside)")
+
+    // Feathering twice adds up like two blurs.
+    doc.featherSelection(by: 6)
+    near(doc.selectionFeather, 10, 0.01, "8 then 6 adds up to 10")
+    doc.undo()
+    equal(doc.selectionFeather, 8, "undo puts the softness back as it was")
+
+    // A new selection starts hard.
+    let settings = ToolSettings()
+    settings.tool = .rectangleSelect
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.mouseDown(at: CGPoint(x: 10, y: 10), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 20, y: 20), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 20, y: 20), modifiers: [])
+    equal(doc.selectionFeather, 0, "a fresh marquee has a hard edge")
+
+    doc.selectionPath = CGPath(rect: CGRect(x: 40, y: 40, width: 20, height: 20), transform: nil)
+    doc.expandSelection(by: 5)
+    let grown = doc.selectionPath?.boundingBoxOfPath ?? .zero
+    near(grown.minX, 35, 0.5, "expand grows the left edge")
+    near(grown.width, 30, 0.5, "and the width by twice the amount")
+
+    doc.contractSelection(by: 8)
+    let shrunk = doc.selectionPath?.boundingBoxOfPath ?? .zero
+    near(shrunk.minX, 43, 0.5, "contract pulls the edge back in")
+    doc.contractSelection(by: 50)
+    check(doc.selectionPath == nil, "contracting past nothing leaves nothing selected")
+    equal(doc.selectionFeather, 0, "and no softness behind")
+
+    // Expansion stays on the canvas.
+    doc.selectionPath = CGPath(rect: CGRect(x: 0, y: 0, width: 10, height: 10), transform: nil)
+    doc.expandSelection(by: 20)
+    let clipped = doc.selectionPath?.boundingBoxOfPath ?? .zero
+    check(clipped.minX >= 0 && clipped.minY >= 0, "expanding past the edge stops at the canvas")
+}
+
 section("clicking clears the selection")
 do {
     let doc = Document(width: 50, height: 50)

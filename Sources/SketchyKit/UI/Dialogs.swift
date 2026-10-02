@@ -216,6 +216,36 @@ enum Dialogs {
         }
     }
 
+    /// Asks for one number of pixels, for the Select ▸ Modify commands.
+    static func pixels(title: String, label: String, value: Double,
+                       in window: NSWindow, completion: @escaping (Double?) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 26))
+        let caption = NSTextField(labelWithString: label)
+        caption.frame = NSRect(x: 0, y: 4, width: 96, height: 18)
+        let field = NSTextField(string: String(format: "%g", value))
+        field.frame = NSRect(x: 100, y: 2, width: 80, height: 22)
+        let formatter = NumberFormatter()
+        formatter.minimum = 0
+        formatter.maximum = 1000
+        formatter.maximumFractionDigits = 1
+        field.formatter = formatter
+        let unit = NSTextField(labelWithString: "pixels")
+        unit.frame = NSRect(x: 186, y: 4, width: 54, height: 18)
+        [caption, field, unit].forEach(container.addSubview)
+        alert.accessoryView = container
+        alert.window.initialFirstResponder = field
+
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { completion(nil); return }
+            completion(field.doubleValue)
+        }
+    }
+
     /// Generic one- or two-slider effect sheet with a live preview callback.
     static func sliders(title: String,
                         specs: [(name: String, min: Double, max: Double, value: Double)],
