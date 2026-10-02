@@ -319,6 +319,13 @@ final class ToolSettings {
     /// hard edges unless the user asks for smoothing.
     var resampling: Resampling = .pixels
     var fillGlobally: Bool = false
+    /// The magic wand's own settings, kept apart from the paint bucket's and
+    /// the color picker's so changing one does not quietly change the other.
+    var wandGlobally: Bool = false
+    var wandSampleMerged: Bool = false
+    /// How many pixels across the wand averages to get the color it matches:
+    /// 1, 3 or 5. More forgives noise in a photo.
+    var wandSampleSize: Int = 1
     /// The last target-file-size export, so a second run of it opens on what
     /// the first one asked for rather than the defaults.
     var exportFormat: FileSizeExport.Format = .jpeg

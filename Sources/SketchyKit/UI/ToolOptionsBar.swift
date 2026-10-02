@@ -110,14 +110,30 @@ final class ToolOptionsBar: NSView {
             addBlend()
         case .eraser:
             addSizeControl()
-        case .paintBucket, .magicWand:
+        case .paintBucket:
             addSlider(title: "Tolerance", value: settings.tolerance, action: #selector(toleranceChanged(_:)))
             let scope = popup(["Contiguous", "Global"],
                               selected: settings.fillGlobally ? "Global" : "Contiguous",
                               width: 120, action: #selector(fillScopeChanged(_:)))
             stack.addArrangedSubview(label("Flood Mode:"))
             stack.addArrangedSubview(scope)
-            if settings.tool == .paintBucket { addBlend() } else { addSelectionMode() }
+            addBlend()
+        case .magicWand:
+            addSlider(title: "Tolerance", value: settings.tolerance, action: #selector(toleranceChanged(_:)))
+            stack.addArrangedSubview(label("Flood Mode:"))
+            stack.addArrangedSubview(popup(["Contiguous", "Global"],
+                                           selected: settings.wandGlobally ? "Global" : "Contiguous",
+                                           width: 110, action: #selector(wandScopeChanged(_:))))
+            stack.addArrangedSubview(label("Sampling:"))
+            stack.addArrangedSubview(popup(["Layer", "Image"],
+                                           selected: settings.wandSampleMerged ? "Image" : "Layer",
+                                           width: 90, action: #selector(wandSamplingChanged(_:))))
+            stack.addArrangedSubview(label("Sample:"))
+            stack.addArrangedSubview(popup(ToolOptionsBar.sampleSizes.map(\.title),
+                                           selected: ToolOptionsBar.sampleSizes
+                                            .first { $0.size == settings.wandSampleSize }?.title ?? "Point",
+                                           width: 100, action: #selector(wandSampleSizeChanged(_:))))
+            addSelectionMode()
         case .rectangleSelect, .ellipseSelect, .lassoSelect, .polygonLassoSelect:
             addSelectionMode()
         case .gradient:
@@ -320,6 +336,19 @@ final class ToolOptionsBar: NSView {
     }
     @objc private func fillScopeChanged(_ sender: NSPopUpButton) {
         settings.fillGlobally = (sender.titleOfSelectedItem == "Global"); onChange?()
+    }
+    static let sampleSizes: [(title: String, size: Int)] = [("Point", 1), ("3 × 3 Average", 3), ("5 × 5 Average", 5)]
+
+    @objc private func wandScopeChanged(_ sender: NSPopUpButton) {
+        settings.wandGlobally = (sender.titleOfSelectedItem == "Global"); onChange?()
+    }
+    @objc private func wandSamplingChanged(_ sender: NSPopUpButton) {
+        settings.wandSampleMerged = (sender.titleOfSelectedItem == "Image"); onChange?()
+    }
+    @objc private func wandSampleSizeChanged(_ sender: NSPopUpButton) {
+        settings.wandSampleSize = ToolOptionsBar.sampleSizes
+            .first { $0.title == sender.titleOfSelectedItem }?.size ?? 1
+        onChange?()
     }
     @objc private func samplingChanged(_ sender: NSPopUpButton) {
         settings.sampleMerged = (sender.titleOfSelectedItem == "Image"); onChange?()

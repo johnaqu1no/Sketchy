@@ -1321,10 +1321,22 @@ final class ToolEngine {
     }
 
     private func magicWand(at p: CGPoint, modifiers: NSEvent.ModifierFlags) {
-        guard let layer = doc.selectedLayer,
+        // Sampling the image reads what is on screen, every layer at once.
+        let source: Layer?
+        if settings.wandSampleMerged {
+            source = doc.composite().map { image in
+                let merged = Layer(width: doc.width, height: doc.height, name: "merged")
+                merged.draw(image: image)
+                return merged
+            }
+        } else {
+            source = doc.selectedLayer
+        }
+        guard let layer = source,
               let masked = PixelOps.maskedRegion(in: layer, seedX: Int(p.x), seedY: Int(p.y),
                                                  tolerance: settings.tolerance,
-                                                 contiguous: !settings.fillGlobally) else { return }
+                                                 contiguous: !settings.wandGlobally,
+                                                 sampleSize: settings.wandSampleSize) else { return }
         applySelection(PixelOps.path(from: masked.flags, width: layer.width, height: layer.height,
                                      bounds: masked.bounds))
     }

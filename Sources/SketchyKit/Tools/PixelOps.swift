@@ -56,18 +56,29 @@ enum PixelOps {
                      tolerance: tolerance, contiguous: contiguous)?.flags
     }
 
+    /// `sampleSize` averages that many pixels across around the seed for the
+    /// color to match, so one stray pixel in a photo does not decide it.
     static func maskedRegion(in layer: Layer,
                              seedX: Int, seedY: Int,
                              tolerance: CGFloat,
-                             contiguous: Bool) -> MaskedRegion? {
+                             contiguous: Bool,
+                             sampleSize: Int = 1) -> MaskedRegion? {
         guard let d = layer.pixels else { return nil }
         let w = layer.width, h = layer.height, stride = layer.bytesPerRow
         guard seedX >= 0, seedY >= 0, seedX < w, seedY < h else { return nil }
 
         let limit = channelLimit(for: tolerance)
-        let seedOffset = (h - 1 - seedY) * stride + seedX * 4
-        let seedB = Int(d[seedOffset + 0]), seedG = Int(d[seedOffset + 1])
-        let seedR = Int(d[seedOffset + 2]), seedA = Int(d[seedOffset + 3])
+        let reach = max(0, sampleSize / 2)
+        var sums = [0, 0, 0, 0], count = 0
+        for y in max(0, seedY - reach)...min(h - 1, seedY + reach) {
+            for x in max(0, seedX - reach)...min(w - 1, seedX + reach) {
+                let o = (h - 1 - y) * stride + x * 4
+                for c in 0..<4 { sums[c] += Int(d[o + c]) }
+                count += 1
+            }
+        }
+        let seedB = (sums[0] + count / 2) / count, seedG = (sums[1] + count / 2) / count
+        let seedR = (sums[2] + count / 2) / count, seedA = (sums[3] + count / 2) / count
 
         var mask = [Bool](repeating: false, count: w * h)
         var minX = Int.max, maxX = Int.min, minY = Int.max, maxY = Int.min
@@ -109,7 +120,16 @@ enum PixelOps {
 
             // Scanline flood fill: fill a run, then push only where the rows
             // above and below start a new run of their own.
+            // An averaged sample need not match the very pixel clicked, so
+            // the fill starts from whatever in the sampled patch does.
             var stack: [(Int, Int)] = [(seedX, seedY)]
+            if reach > 0 {
+                for y in max(0, seedY - reach)...min(h - 1, seedY + reach) {
+                    for x in max(0, seedX - reach)...min(w - 1, seedX + reach) where matches(x, y) {
+                        stack.append((x, y))
+                    }
+                }
+            }
             stack.reserveCapacity(1024)
             while let (sx, sy) = stack.popLast() {
                 let maskRow = sy * w

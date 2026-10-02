@@ -1704,6 +1704,48 @@ do {
     check(clipped.minX >= 0 && clipped.minY >= 0, "expanding past the edge stops at the canvas")
 }
 
+section("magic wand sampling")
+do {
+    // Bottom layer: left half black. Top layer: a blue band across the top.
+    let doc = Document(width: 40, height: 40)
+    doc.selectedLayer?.context.setFillColor(NSColor.black.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 0, width: 20, height: 40))
+    doc.addLayer(named: "Band")
+    doc.selectedLayer?.context.setFillColor(NSColor.blue.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 30, width: 40, height: 10))
+    let settings = ToolSettings()
+    settings.tool = .magicWand
+    settings.tolerance = 0.1
+    let engine = ToolEngine(doc: doc, settings: settings)
+    func wand(_ x: CGFloat, _ y: CGFloat) -> CGRect {
+        engine.mouseDown(at: CGPoint(x: x, y: y), rightButton: false, modifiers: [])
+        engine.mouseUp(at: CGPoint(x: x, y: y), modifiers: [])
+        return doc.selectionPath?.boundingBoxOfPath ?? .zero
+    }
+
+    // On the band layer alone, clicking an empty spot finds all the empty.
+    equal(wand(10, 10), CGRect(x: 0, y: 0, width: 40, height: 30), "the active layer's empty area")
+    settings.wandSampleMerged = true
+    equal(wand(10, 10), CGRect(x: 0, y: 0, width: 20, height: 30), "sampling the image sees the black below")
+
+    // The wand's flood mode is its own.
+    settings.wandGlobally = true
+    check(!settings.fillGlobally, "setting the wand to global leaves the bucket contiguous")
+
+    // A lone odd pixel under the click does not decide the match when
+    // averaging: the 3×3 around it is mostly black.
+    settings.wandGlobally = false
+    settings.tolerance = 0.5
+    doc.layers[0].context.setFillColor(NSColor.white.cgColor)
+    doc.layers[0].context.fill(CGRect(x: 10, y: 10, width: 1, height: 1))
+    settings.wandSampleSize = 1
+    let point = wand(10, 10)
+    check(point.width <= 1, "a point sample takes the stray pixel's color — got \(point)")
+    settings.wandSampleSize = 3
+    let averaged = wand(10, 10)
+    check(averaged.width >= 19, "a 3 × 3 average matches the black around it — got \(averaged)")
+}
+
 section("the polygon lasso")
 do {
     let doc = Document(width: 100, height: 100)
