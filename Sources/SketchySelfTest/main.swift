@@ -1590,6 +1590,56 @@ do {
           "the white gap between them stays unselected")
 }
 
+section("an inverted selection combines like any other")
+do {
+    let doc = Document(width: 100, height: 100)
+    let settings = ToolSettings()
+    settings.tool = .rectangleSelect
+    let engine = ToolEngine(doc: doc, settings: settings)
+    func dragSelect(_ from: CGPoint, _ to: CGPoint, _ modifiers: NSEvent.ModifierFlags = []) {
+        engine.mouseDown(at: from, rightButton: false, modifiers: modifiers)
+        engine.mouseDragged(to: to, modifiers: modifiers)
+        engine.mouseUp(at: to, modifiers: modifiers)
+    }
+    func selected(_ x: CGFloat, _ y: CGFloat) -> Bool {
+        doc.selectionPath?.contains(CGPoint(x: x, y: y)) ?? false
+    }
+
+    dragSelect(CGPoint(x: 25, y: 25), CGPoint(x: 75, y: 75))
+    doc.invertSelection()
+    check(!selected(50, 50), "the inverted hole is not selected")
+    check(selected(10, 10), "the ring around it is")
+    check(doc.selectionPath?.contains(CGPoint(x: 50, y: 50), using: .evenOdd) == false,
+          "and every fill rule agrees on it")
+
+    // Adding somewhere else used to fill the hole back in.
+    dragSelect(CGPoint(x: 0, y: 90), CGPoint(x: 5, y: 95), [.option])
+    check(!selected(50, 50), "adding elsewhere leaves the hole alone")
+
+    // Painting honours the hole too.
+    doc.selectedLayer?.fill(with: .white)
+    doc.selectedLayer.map { layer in
+        layer.context.saveGState()
+        doc.clipToSelection(layer.context)
+        layer.context.setFillColor(NSColor.black.cgColor)
+        layer.context.fill(doc.bounds)
+        layer.context.restoreGState()
+    }
+    equal(pixel(doc, 50, 50)?.g ?? 0, 255, "the hole is not painted")
+    check(Int(pixel(doc, 10, 10)?.g ?? 255) < 10, "the ring is")
+
+    // A selection is kept to the canvas, and taking it all away deselects.
+    dragSelect(CGPoint(x: 80, y: 80), CGPoint(x: 140, y: 140))
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, CGRect(x: 80, y: 80, width: 20, height: 20),
+          "a marquee past the edge stops at the canvas")
+    dragSelect(CGPoint(x: 70, y: 70), CGPoint(x: 100, y: 100), [.command])
+    check(doc.selectionPath == nil, "subtracting everything leaves no selection, not an empty one")
+
+    doc.selectAll()
+    doc.invertSelection()
+    check(doc.selectionPath == nil, "inverting everything leaves nothing selected")
+}
+
 section("clicking clears the selection")
 do {
     let doc = Document(width: 50, height: 50)
@@ -2218,6 +2268,7 @@ do {
 
     doc.selectAll()
     equal(doc.history.currentTitle, "Select All", "select all is a step")
+    doc.selectionPath = CGPath(rect: CGRect(x: 10, y: 10, width: 20, height: 20), transform: nil)
     doc.invertSelection()
     equal(doc.history.currentTitle, "Invert Selection", "so is inverting")
     doc.deselect()

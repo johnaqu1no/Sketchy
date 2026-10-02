@@ -689,7 +689,7 @@ final class Document {
         let region = selectionPath ?? CGPath(rect: bounds, transform: nil)
         layer.context.saveGState()
         layer.context.addPath(region)
-        layer.context.clip(using: .evenOdd)
+        layer.context.clip()
         layer.context.clear(bounds)
         layer.context.restoreGState()
         commit(selectionPath == nil ? "Erase Layer" : "Erase Selection")
@@ -838,20 +838,34 @@ final class Document {
     }
 
     func invertSelection() {
-        guard let sel = selectionPath else { selectionPath = nil; return }
-        let p = CGMutablePath()
-        p.addRect(bounds)
-        p.addPath(sel)
-        selectionPath = p.copy(using: nil)
+        guard let sel = selectionPath else { return }
+        // A real subtraction, not the canvas with the outline laid over it:
+        // that only reads as inverted under even-odd, and the next add or
+        // subtract, which goes by winding, filled the hole straight back in.
+        selectionPath = canonicalSelection(CGPath(rect: bounds, transform: nil).subtracting(sel))
         commit("Invert Selection")
         onChange?()
+    }
+
+    /// A selection outline as it is kept: clipped to the canvas and with no
+    /// overlaps, so every fill rule reads it the same way. Nil when nothing is
+    /// left, since an empty selection would quietly block every edit.
+    func canonicalSelection(_ path: CGPath) -> CGPath? {
+        let box = path.boundingBoxOfPath
+        guard !box.isNull, !box.isEmpty, box.intersects(bounds) else { return nil }
+        // Inside the canvas there is nothing to cut, and an unneeded boolean
+        // pass only blurs whole-pixel edges with rounding.
+        guard !bounds.contains(box) else { return path.snappedToPixels() }
+        let kept = path.intersection(CGPath(rect: bounds, transform: nil)).snappedToPixels()
+        let keptBox = kept.boundingBoxOfPath
+        return keptBox.isNull || keptBox.isEmpty ? nil : kept
     }
 
     /// Applies the current selection as a clip on a context (image coordinates).
     func clipToSelection(_ ctx: CGContext) {
         guard let sel = selectionPath else { return }
         ctx.addPath(sel)
-        ctx.clip(using: .evenOdd)
+        ctx.clip()
     }
 
     // MARK: - IO
@@ -1000,6 +1014,33 @@ final class Document {
             throw DocumentError.tooLarge(reason)
         }
         return Document(image: img, url: url)
+    }
+}
+
+extension CGPath {
+    /// The same outline with coordinates a rounding error away from a whole
+    /// pixel put back on it. Boolean operations leave edges at 79.9999999,
+    /// which then reads as a fraction of a pixel everywhere it is measured.
+    func snappedToPixels() -> CGPath {
+        func snap(_ v: CGFloat) -> CGFloat {
+            let r = v.rounded()
+            return abs(v - r) < 1e-4 ? r : v
+        }
+        func snap(_ p: CGPoint) -> CGPoint { CGPoint(x: snap(p.x), y: snap(p.y)) }
+        let out = CGMutablePath()
+        applyWithBlock { element in
+            let pts = element.pointee.points
+            switch element.pointee.type {
+            case .moveToPoint:         out.move(to: snap(pts[0]))
+            case .addLineToPoint:      out.addLine(to: snap(pts[0]))
+            case .addQuadCurveToPoint: out.addQuadCurve(to: snap(pts[1]), control: snap(pts[0]))
+            case .addCurveToPoint:
+                out.addCurve(to: snap(pts[2]), control1: snap(pts[0]), control2: snap(pts[1]))
+            case .closeSubpath:        out.closeSubpath()
+            @unknown default:          break
+            }
+        }
+        return out.copy() ?? out
     }
 }
 

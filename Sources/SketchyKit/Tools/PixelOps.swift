@@ -249,7 +249,7 @@ enum PixelOps {
         layer.markEdited(masked.bounds)
         let ctx = layer.rawContext
         ctx.saveGState()
-        if let clip { ctx.addPath(clip); ctx.clip(using: .evenOdd) }
+        if let clip { ctx.addPath(clip); ctx.clip() }
         ctx.addPath(region)
         ctx.clip()
         ctx.setAlpha(alpha)
@@ -446,7 +446,7 @@ extension PixelOps {
                     : 1 - (distance - Float(core)) / (1 - Float(core))
                 weight = weight.clamped(to: 0...1)
                 if let clip, !clip.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5),
-                                            using: .evenOdd) { continue }
+                                            using: .winding) { continue }
 
                 let o = (layer.height - 1 - y) * stride + x * 4
                 var healed = [Float](repeating: 0, count: 4)
@@ -564,7 +564,7 @@ extension PixelOps {
                 weight = weight.clamped(to: 0...1) * strength
                 guard weight > 0 else { continue }
                 if let clip, !clip.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5),
-                                            using: .evenOdd) { continue }
+                                            using: .winding) { continue }
 
                 let wanted = target(dest, col, row)
                 let o = (layer.height - 1 - y) * stride + x * 4

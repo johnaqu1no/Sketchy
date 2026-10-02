@@ -1171,17 +1171,27 @@ final class ToolEngine {
             return
         }
         let mode = activeSelectionMode
+        let combined: CGPath
         if let existing = startedSelection, mode != .replace {
             switch mode {
-            case .union:     doc.selectionPath = existing.union(new)
-            case .exclude:   doc.selectionPath = existing.subtracting(new)
-            case .intersect: doc.selectionPath = existing.intersection(new)
-            case .xor:       doc.selectionPath = existing.symmetricDifference(new)
-            case .replace:   doc.selectionPath = new
+            case .union:     combined = existing.union(new)
+            case .exclude:   combined = existing.subtracting(new)
+            case .intersect: combined = existing.intersection(new)
+            case .xor:       combined = existing.symmetricDifference(new)
+            case .replace:   combined = new
             }
         } else {
-            doc.selectionPath = new
+            combined = new
         }
+        // Taking everything away leaves nothing selected, which is the same as
+        // no selection rather than one that blocks every edit.
+        guard let kept = doc.canonicalSelection(combined) else {
+            doc.selectionPath = nil
+            if startedSelection != nil { doc.commit("Deselect") }
+            doc.onChange?()
+            return
+        }
+        doc.selectionPath = kept
         // A selection is an edit like any other: it belongs in the history so
         // it can be undone and stepped back to.
         doc.commit(selectionStepTitle)
@@ -1212,7 +1222,7 @@ final class ToolEngine {
         cut.context.saveGState()
         cut.context.translateBy(x: -box.minX, y: -box.minY)
         cut.context.addPath(sel)
-        cut.context.clip(using: .evenOdd)
+        cut.context.clip()
         cut.context.draw(full, in: doc.bounds)
         cut.context.restoreGState()
         floatingImage = cut.image
@@ -1234,7 +1244,7 @@ final class ToolEngine {
         // Erase the lifted pixels from the source layer.
         layer.context.saveGState()
         layer.context.addPath(sel)
-        layer.context.clip(using: .evenOdd)
+        layer.context.clip()
         layer.context.clear(doc.bounds)
         layer.context.restoreGState()
     }
@@ -1595,7 +1605,7 @@ final class ToolEngine {
         if let scratch = strokeScratch, let image = scratch.image {
             ctx.saveGState()
             ctx.setBlendMode(settings.blendMode.cgBlendMode)
-            if let sel = doc.selectionPath { ctx.addPath(sel); ctx.clip(using: .evenOdd) }
+            if let sel = doc.selectionPath { ctx.addPath(sel); ctx.clip() }
             ctx.draw(image, in: strokeScratchRect)
             ctx.restoreGState()
         }

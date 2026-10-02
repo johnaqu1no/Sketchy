@@ -23,7 +23,7 @@ enum ImageEffects {
                                                    format: .RGBA8, colorSpace: workingSpace) else { return false }
         let ctx = layer.context
         ctx.saveGState()
-        if let selection { ctx.addPath(selection); ctx.clip(using: .evenOdd) }
+        if let selection { ctx.addPath(selection); ctx.clip() }
         ctx.setBlendMode(.copy)
         ctx.draw(result, in: rect)
         ctx.restoreGState()

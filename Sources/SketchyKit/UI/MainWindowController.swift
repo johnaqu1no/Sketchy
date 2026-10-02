@@ -622,7 +622,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         cut.context.saveGState()
         cut.context.translateBy(x: -box.minX, y: -box.minY)
         cut.context.addPath(sel)
-        cut.context.clip(using: .evenOdd)
+        cut.context.clip()
         cut.context.draw(img, in: doc.bounds)
         cut.context.restoreGState()
         clipboardImage = cut.image
@@ -748,7 +748,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
         layer.context.saveGState()
         layer.context.addPath(sel)
-        layer.context.clip(using: .evenOdd)
+        layer.context.clip()
         layer.context.setFillColor(colorsPanel.primary.srgb.cgColor)
         layer.context.fill(doc.bounds)
         layer.context.restoreGState()
