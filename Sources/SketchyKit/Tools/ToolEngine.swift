@@ -1321,6 +1321,10 @@ final class ToolEngine {
     }
 
     private func magicWand(at p: CGPoint, modifiers: NSEvent.ModifierFlags) {
+        if settings.wandPicksObjects {
+            selectObject(at: p)
+            return
+        }
         // Sampling the image reads what is on screen, every layer at once.
         let source: Layer?
         if settings.wandSampleMerged {
@@ -1339,6 +1343,31 @@ final class ToolEngine {
                                                  sampleSize: settings.wandSampleSize) else { return }
         applySelection(PixelOps.path(from: masked.flags, width: layer.width, height: layer.height,
                                      bounds: masked.bounds))
+    }
+
+    /// Asks Vision for the object under the click. It can take a moment on a
+    /// big image, so it runs off the main thread and the selection lands
+    /// when it is done; the mode and what it combines with are taken now.
+    private func selectObject(at p: CGPoint) {
+        guard SmartSelect.isAvailable else {
+            onStatus?("Selecting objects needs macOS 14 or later")
+            return
+        }
+        guard let image = doc.composite() else { return }
+        let mode = activeSelectionMode, base = startedSelection
+        onStatus?("Finding the object…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let region = SmartSelect.object(in: image, at: p)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard region != nil else {
+                    self.onStatus?("No object found there")
+                    return
+                }
+                self.doc.select(region, mode: mode, title: "Select Object", combiningWith: .some(base))
+                self.onNeedsDisplay?()
+            }
+        }
     }
 
     // MARK: - Floating pixels

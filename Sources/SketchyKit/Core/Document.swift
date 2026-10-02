@@ -1375,16 +1375,25 @@ final class Document {
             source = layer
         }
         let region = PixelOps.solidRegion(in: source, luminance: mask && layer.mask != nil)
+        select(region, mode: mode, title: mask ? "Load Mask as Selection" : "Load Layer as Selection")
+    }
+
+    /// Makes a traced region the selection, or combines it with the one
+    /// there by `mode`, as one step called `title`. `existing` is what to
+    /// combine with when it is not the current selection, as for a tool that
+    /// cleared the old outline when it started.
+    func select(_ region: PixelOps.MaskedRegion?, mode: SelectionMode, title: String,
+                combiningWith existing: CGPath?? = nil) {
         let traced = region.map { PixelOps.path(from: $0.flags, width: width, height: height, bounds: $0.bounds) }
             ?? CGMutablePath()
-
+        let base = existing ?? selectionPath
         let combined: CGPath
-        if let existing = selectionPath, mode != .replace {
+        if let base, mode != .replace {
             switch mode {
-            case .union:     combined = existing.union(traced)
-            case .exclude:   combined = existing.subtracting(traced)
-            case .intersect: combined = existing.intersection(traced)
-            case .xor:       combined = existing.symmetricDifference(traced)
+            case .union:     combined = base.union(traced)
+            case .exclude:   combined = base.subtracting(traced)
+            case .intersect: combined = base.intersection(traced)
+            case .xor:       combined = base.symmetricDifference(traced)
             case .replace:   combined = traced
             }
         } else {
@@ -1395,7 +1404,7 @@ final class Document {
         selectionPath = canonicalSelection(combined)
         if selectionPath != nil { selectionFeather = keptFeather }
         guard selectionPath != nil || before != nil else { return }
-        commit(mask ? "Load Mask as Selection" : "Load Layer as Selection")
+        commit(selectionPath == nil ? "Deselect" : title)
         onChange?()
     }
 

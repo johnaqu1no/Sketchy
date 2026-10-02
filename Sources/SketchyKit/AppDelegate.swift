@@ -234,6 +234,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(item("Select All", #selector(MainWindowController.selectAll(_:)), "a"))
         edit.addItem(item("Deselect All", #selector(MainWindowController.deselect(_:)), "d"))
         edit.addItem(item("Invert Selection", #selector(MainWindowController.invertSelection(_:)), "i"))
+        edit.addItem(item("Select Subject", #selector(MainWindowController.selectSubject(_:)), "a", [.command, .option]))
+        edit.addItem(item("Color Range\u{2026}", #selector(MainWindowController.colorRange(_:)), ""))
         let modify = NSMenu(title: "Modify Selection")
         modify.addItem(item("Expand\u{2026}", #selector(MainWindowController.expandSelection(_:)), ""))
         modify.addItem(item("Contract\u{2026}", #selector(MainWindowController.contractSelection(_:)), ""))

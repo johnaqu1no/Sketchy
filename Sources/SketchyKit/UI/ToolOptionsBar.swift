@@ -119,6 +119,15 @@ final class ToolOptionsBar: NSView {
             stack.addArrangedSubview(scope)
             addBlend()
         case .magicWand:
+            stack.addArrangedSubview(label("Select:"))
+            stack.addArrangedSubview(popup(["Color", "Object"],
+                                           selected: settings.wandPicksObjects ? "Object" : "Color",
+                                           width: 90, action: #selector(wandModeChanged(_:))))
+            // Objects are found whole, so the color settings have no say.
+            guard !settings.wandPicksObjects else {
+                addSelectionMode()
+                break
+            }
             addSlider(title: "Tolerance", value: settings.tolerance, action: #selector(toleranceChanged(_:)))
             stack.addArrangedSubview(label("Flood Mode:"))
             stack.addArrangedSubview(popup(["Contiguous", "Global"],
@@ -339,6 +348,11 @@ final class ToolOptionsBar: NSView {
     }
     static let sampleSizes: [(title: String, size: Int)] = [("Point", 1), ("3 × 3 Average", 3), ("5 × 5 Average", 5)]
 
+    @objc private func wandModeChanged(_ sender: NSPopUpButton) {
+        settings.wandPicksObjects = (sender.titleOfSelectedItem == "Object")
+        rebuild()
+        onChange?()
+    }
     @objc private func wandScopeChanged(_ sender: NSPopUpButton) {
         settings.wandGlobally = (sender.titleOfSelectedItem == "Global"); onChange?()
     }

@@ -326,6 +326,9 @@ final class ToolSettings {
     /// How many pixels across the wand averages to get the color it matches:
     /// 1, 3 or 5. More forgives noise in a photo.
     var wandSampleSize: Int = 1
+    /// What the wand picks: pixels of a similar color, or the whole object
+    /// under the click, found by Vision.
+    var wandPicksObjects = false
     /// The last target-file-size export, so a second run of it opens on what
     /// the first one asked for rather than the defaults.
     var exportFormat: FileSizeExport.Format = .jpeg

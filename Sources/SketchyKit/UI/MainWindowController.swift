@@ -777,6 +777,70 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
+    /// Selects the subject of the picture, as Vision sees it.
+    @objc func selectSubject(_ sender: Any?) {
+        commitPendingEdits()
+        guard SmartSelect.isAvailable else {
+            statusBar.flash("Select Subject needs macOS 14 or later", thenHintFor: settings.tool)
+            return
+        }
+        guard let image = doc.composite() else { return }
+        statusBar.flash("Finding the subject…", thenHintFor: settings.tool)
+        let document = doc
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let region = SmartSelect.subject(in: image)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard region != nil else {
+                    self.statusBar.flash("No subject found", thenHintFor: self.settings.tool)
+                    return
+                }
+                document.select(region, mode: .replace, title: "Select Subject")
+                self.canvas.refresh()
+                self.refreshPanels()
+            }
+        }
+    }
+
+    /// Selects every pixel near the primary color, across the whole image,
+    /// with a live preview while the fuzziness is dialled in.
+    @objc func colorRange(_ sender: Any?) {
+        commitPendingEdits()
+        guard let window, let image = doc.composite() else { return }
+        let merged = Layer(width: doc.width, height: doc.height, name: "merged")
+        merged.draw(image: image)
+        let color = colorsPanel.primary
+        let original = doc.selectionPath, originalFeather = doc.selectionFeather
+
+        func region(_ values: [Double]) -> PixelOps.MaskedRegion? {
+            SmartSelect.colorRange(in: merged, color: color, fuzziness: CGFloat(values[0] / 100))
+        }
+        Dialogs.sliders(title: "Color Range (primary color)",
+                        specs: [(name: "Fuzziness", min: 0, max: 100, value: 20)],
+                        in: window,
+                        preview: { [weak self] values in
+                            guard let self else { return }
+                            let traced = region(values).map {
+                                PixelOps.path(from: $0.flags, width: self.doc.width, height: self.doc.height,
+                                              bounds: $0.bounds)
+                            }
+                            self.doc.selectionPath = traced.flatMap(self.doc.canonicalSelection)
+                            self.canvas.refresh()
+                        },
+                        completion: { [weak self] values in
+                            guard let self else { return }
+                            // The preview was never a step; put things back,
+                            // then make the real one.
+                            self.doc.selectionPath = original
+                            self.doc.selectionFeather = originalFeather
+                            if let values {
+                                self.doc.select(region(values), mode: .replace, title: "Color Range")
+                            }
+                            self.canvas.refresh()
+                            self.refreshPanels()
+                        })
+    }
+
     @objc func featherSelection(_ sender: Any?) {
         modifySelection("Feather Selection", label: "Radius", default: 4) { [weak self] in
             self?.doc.featherSelection(by: $0)

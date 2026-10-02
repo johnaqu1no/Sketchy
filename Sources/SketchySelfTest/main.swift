@@ -1746,6 +1746,43 @@ do {
     check(averaged.width >= 19, "a 3 × 3 average matches the black around it — got \(averaged)")
 }
 
+section("color range and smart selections")
+do {
+    let doc = Document(width: 40, height: 40)
+    doc.selectedLayer?.context.setFillColor(NSColor.red.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 0, width: 10, height: 10))
+    doc.selectedLayer?.context.fill(CGRect(x: 30, y: 30, width: 10, height: 10))
+    doc.selectedLayer?.context.setFillColor(NSColor(srgbRed: 0.9, green: 0.1, blue: 0.1, alpha: 1).cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 15, y: 15, width: 5, height: 5))
+
+    let exact = SmartSelect.colorRange(in: doc.layers[0], color: .red, fuzziness: 0)
+    doc.select(exact, mode: .replace, title: "Color Range")
+    func selected(_ x: CGFloat, _ y: CGFloat) -> Bool {
+        doc.selectionPath?.contains(CGPoint(x: x, y: y)) ?? false
+    }
+    check(selected(5, 5) && selected(35, 35), "every red patch is picked, wherever it is")
+    check(!selected(17, 17), "a near red is not, with no fuzziness")
+    check(!selected(25, 5), "nor is the white")
+    equal(doc.history.currentTitle, "Color Range", "as one step")
+
+    let fuzzy = SmartSelect.colorRange(in: doc.layers[0], color: .red, fuzziness: 0.15)
+    doc.select(fuzzy, mode: .replace, title: "Color Range")
+    check(selected(17, 17), "with some fuzziness the near red joins")
+
+    // Combining modes work the same as for any other selection.
+    doc.select(exact, mode: .exclude, title: "Color Range")
+    check(selected(17, 17) && !selected(5, 5), "subtracting the exact reds leaves the near one")
+
+    // Vision may or may not see a subject in a flat drawing; either way it
+    // must not throw, and anything it finds lies on the canvas.
+    let picture = Document(width: 64, height: 64)
+    picture.selectedLayer?.context.setFillColor(NSColor.black.cgColor)
+    picture.selectedLayer?.context.fillEllipse(in: CGRect(x: 16, y: 16, width: 32, height: 32))
+    if let image = picture.composite(), let found = SmartSelect.subject(in: image) {
+        check(CGRect(x: 0, y: 0, width: 64, height: 64).contains(found.bounds), "a subject lies on the canvas")
+    }
+}
+
 section("the polygon lasso")
 do {
     let doc = Document(width: 100, height: 100)
