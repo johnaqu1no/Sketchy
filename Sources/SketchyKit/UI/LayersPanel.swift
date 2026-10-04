@@ -42,6 +42,9 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     /// Called just before the selected layer changes, so a pending edit can be
     /// put down while the layer it belongs to is still the selected one.
     var onBeforeSelect: (() -> Void)?
+    /// Called before the palette changes the stack itself, so pixels still
+    /// floating are put down on the layer they came from while it exists.
+    var onBeforeEdit: (() -> Void)?
 
     init() {
         super.init(title: "Layers", size: NSSize(width: 262, height: 360))
@@ -264,18 +267,19 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         onChange?()
     }
 
-    @objc private func addTapped() { onAdd?() }
-    @objc private func deleteTapped() { onDelete?() }
-    @objc private func duplicateTapped() { onDuplicate?() }
-    @objc private func mergeTapped() { onMerge?() }
-    @objc private func upTapped() { onMoveUp?() }
-    @objc private func downTapped() { onMoveDown?() }
-    @objc private func groupTapped() { onGroup?() }
-    @objc private func ungroupTapped() { onUngroup?() }
+    @objc private func addTapped() { onBeforeEdit?(); onAdd?() }
+    @objc private func deleteTapped() { onBeforeEdit?(); onDelete?() }
+    @objc private func duplicateTapped() { onBeforeEdit?(); onDuplicate?() }
+    @objc private func mergeTapped() { onBeforeEdit?(); onMerge?() }
+    @objc private func upTapped() { onBeforeEdit?(); onMoveUp?() }
+    @objc private func downTapped() { onBeforeEdit?(); onMoveDown?() }
+    @objc private func groupTapped() { onBeforeEdit?(); onGroup?() }
+    @objc private func ungroupTapped() { onBeforeEdit?(); onUngroup?() }
     @objc private func propertiesTapped() { onProperties?() }
 
     @objc private func maskTapped() {
         guard let doc = document else { return }
+        onBeforeEdit?()
         let hide = NSApp.currentEvent?.modifierFlags.contains(.option) == true
         doc.addLayerMask(hideAll: hide)
         reload()
@@ -430,6 +434,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     /// or releases it.
     func toggleClipping(row: Int) {
         guard let doc = document else { return }
+        onBeforeEdit?()
         doc.toggleClipping(at: modelIndex(forRow: row))
         reload()
         onChange?()
@@ -440,6 +445,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
 
     private func changeMask(_ body: (Document) -> Void) {
         guard let doc = document else { return }
+        onBeforeEdit?()
         body(doc)
         reload()
         onChange?()
@@ -602,6 +608,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     @discardableResult
     func drop(fromRow from: Int, toRow row: Int, onto: Bool, copying: Bool) -> Bool {
         guard let doc = document else { return false }
+        onBeforeEdit?()
         let source = modelIndex(forRow: from)
         guard doc.layers.indices.contains(source) else { return false }
         // Dragging a row that was not picked drags that row alone.

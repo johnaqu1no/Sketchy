@@ -324,7 +324,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         layers.addItem(item("Flip Layer Horizontal", #selector(MainWindowController.flipLayerHorizontal(_:)), ""))
         layers.addItem(item("Flip Layer Vertical", #selector(MainWindowController.flipLayerVertical(_:)), ""))
         layers.addItem(.separator())
-        layers.addItem(item("Layer Properties…", #selector(MainWindowController.showLayerProperties), "F4", []))
+        let f4 = String(Character(UnicodeScalar(UInt16(NSF4FunctionKey))!))
+        layers.addItem(item("Layer Properties…", #selector(MainWindowController.showLayerProperties), f4, []))
         addSubmenu(layers, to: main)
 
         // Adjustments

@@ -107,6 +107,9 @@ final class PaletteHub {
         layersPanel.onBeforeSelect = { [weak controller] in
             controller?.commitPendingEdits()
         }
+        layersPanel.onBeforeEdit = { [weak controller] in
+            controller?.commitPendingEdits()
+        }
         layersPanel.onChange = { [weak self, weak controller] in
             controller?.refreshCanvas()
             self?.layersPanel.reload()

@@ -1783,6 +1783,49 @@ do {
     }
 }
 
+section("the clone stamp copies from its source")
+do {
+    // A red block on the left, white everywhere else.
+    let doc = Document(width: 60, height: 20)
+    doc.selectedLayer?.context.setFillColor(NSColor.red.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+    let settings = ToolSettings()
+    settings.tool = .cloneStamp
+    settings.brushWidth = 6
+    let engine = ToolEngine(doc: doc, settings: settings)
+    // Source in the red, painting 30 to the right of it.
+    engine.mouseDown(at: CGPoint(x: 10, y: 10), rightButton: false, modifiers: [.option])
+    engine.mouseUp(at: CGPoint(x: 10, y: 10), modifiers: [.option])
+    engine.mouseDown(at: CGPoint(x: 40, y: 10), rightButton: false, modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 40, y: 10), modifiers: [])
+    let cloned = pixel(doc, 40, 10)
+    check((cloned?.r ?? 0) > 200 && (cloned?.g ?? 255) < 60,
+          "painting 30 right of a red source lays down red — got \(String(describing: cloned))")
+}
+
+section("picking on the wheel keeps the color's transparency")
+do {
+    let wheel = ColorWheelView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+    wheel.selection = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 0.5)
+    wheel.brightness = 1
+    var picked: NSColor?
+    wheel.onPick = { picked = $0 }
+    wheel.pick(at: CGPoint(x: 90, y: 50))
+    near(picked?.alphaComponent ?? 0, 0.5, 0.01, "a half-transparent color stays half transparent")
+}
+
+windowSection("palette edits put floating pixels down first") {
+    let doc = Document(width: 8, height: 8)
+    doc.addLayer(named: "Top")
+    let panel = LayersPanel()
+    panel.attach(doc)
+    var committed = 0
+    panel.onBeforeEdit = { committed += 1 }
+    panel.drop(fromRow: 0, toRow: 2, onto: false, copying: false)
+    panel.toggleClipping(row: 0)
+    equal(committed, 2, "a drag and a clip each settle pending edits before changing the stack")
+}
+
 section("the polygon lasso")
 do {
     let doc = Document(width: 100, height: 100)
