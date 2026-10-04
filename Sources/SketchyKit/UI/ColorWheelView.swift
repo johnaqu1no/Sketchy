@@ -99,7 +99,8 @@ final class ColorWheelView: NSView {
         if brightness == 0 { brightness = 1 }
         let color = NSColor.fromHSV(h: Int((hue * 360).rounded()),
                                     s: Int((saturation * 100).rounded()),
-                                    v: Int((brightness * 100).rounded()))
+                                    v: Int((brightness * 100).rounded()),
+                                    alpha: selection.alphaComponent)
         selection = color
         onPick?(color)
     }

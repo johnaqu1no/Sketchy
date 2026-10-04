@@ -151,7 +151,7 @@ final class ColorsPanel: FloatingPanel {
         let base = (editingSecondary ? secondary : primary).usingColorSpace(.deviceRGB) ?? .black
         applyPicked(NSColor(calibratedHue: base.hueComponent,
                             saturation: base.saturationComponent,
-                            brightness: CGFloat(valueSlider.doubleValue), alpha: 1))
+                            brightness: CGFloat(valueSlider.doubleValue), alpha: base.alphaComponent))
     }
 
     @objc private func swapColors() {
