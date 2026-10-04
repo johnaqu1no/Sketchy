@@ -906,7 +906,9 @@ final class ToolEngine {
                                                      width: d + 2, height: d + 2))
         ctx.addEllipse(in: CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d))
         ctx.clip()
-        ctx.draw(src, in: CGRect(x: -delta.width, y: -delta.height,
+        // `delta` runs from the source to the brush, so the layer is shifted
+        // that way to put the source under it.
+        ctx.draw(src, in: CGRect(x: delta.width, y: delta.height,
                                  width: CGFloat(layer.width), height: CGFloat(layer.height)))
         ctx.restoreGState()
     }
