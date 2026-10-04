@@ -2762,6 +2762,84 @@ windowSection("a paste shows up in the palette") {
     controller.window?.close()
 }
 
+windowSection("paste takes what is on the clipboard now") {
+    let board = NSPasteboard(name: NSPasteboard.Name("sketchy-selftest-\(getpid())"))
+    defer { board.releaseGlobally() }
+    func controller(_ doc: Document) -> MainWindowController {
+        let c = MainWindowController(doc: doc, hub: PaletteHub())
+        c.pasteboard = board
+        c.oversizePastePolicy = .cancel
+        return c
+    }
+
+    // Copy red out of Sketchy, then copy blue in "another app".
+    let doc = Document(width: 20, height: 20, background: .red)
+    let c = controller(doc)
+    c.selectAll(nil)
+    c.copy(nil)
+    let blue = Layer(width: 6, height: 6, name: "blue")
+    blue.fill(with: .blue)
+    board.clearContents()
+    board.writeObjects([NSImage(cgImage: blue.image!, size: NSSize(width: 6, height: 6))])
+
+    let target = Document(width: 20, height: 20, background: .white)
+    let t = controller(target)
+    t.paste(nil)
+    t.commitPendingEdits()
+    let landed = pixel(target, 2, 17)
+    check((landed?.b ?? 0) > 200 && (landed?.r ?? 255) < 60,
+          "the newer clipboard wins — got \(String(describing: landed))")
+    c.paste(nil)
+    c.commitPendingEdits()
+    let back = pixel(doc, 2, 17)
+    check((back?.b ?? 0) > 200 && (back?.r ?? 255) < 60,
+          "even in the window that copied before — got \(String(describing: back))")
+    c.window?.close(); t.window?.close()
+
+    // Copying while pixels float copies them, not the hole they left.
+    let floating = Document(width: 20, height: 20, background: .red)
+    let f = controller(floating)
+    floating.selectionPath = CGPath(rect: CGRect(x: 0, y: 0, width: 10, height: 10), transform: nil)
+    f.selectTool(.moveSelectedPixels)
+    f.engine.mouseDown(at: CGPoint(x: 5, y: 5), rightButton: false, modifiers: [])
+    f.engine.mouseDragged(to: CGPoint(x: 12, y: 12), modifiers: [])
+    f.engine.mouseUp(at: CGPoint(x: 12, y: 12), modifiers: [])
+    check(f.engine.hasFloatingPixels, "the pixels are floating")
+    f.copy(nil)
+    let copied = Document(width: 10, height: 10, background: nil)
+    let g = controller(copied)
+    g.paste(nil)
+    g.commitPendingEdits()
+    // The copy's bottom-left corner sits over where the pixels were lifted
+    // from, which is a hole in the layer until they are put down.
+    check((pixel(copied, 1, 1)?.r ?? 0) > 200, "copying while floating copies the floating pixels")
+    f.window?.close(); g.window?.close()
+
+    // A cancelled paste into a new layer leaves no empty layer behind.
+    let small = Document(width: 4, height: 4, background: .white)
+    let s = controller(small)
+    let layers = small.layers.count, steps = small.history.entries.count
+    s.pasteIntoNewLayer(nil)
+    equal(small.layers.count, layers, "no stray layer when the oversized paste is cancelled")
+    equal(small.history.entries.count, steps, "and no step either")
+    s.window?.close()
+
+    // A paste that fits the canvas is moved on rather than cut off at the edge.
+    let edge = Document(width: 20, height: 20, background: .white)
+    let e = controller(edge)
+    edge.selectionPath = CGPath(rect: CGRect(x: 16, y: 0, width: 4, height: 4), transform: nil)
+    let clip = Layer(width: 6, height: 6, name: "clip")
+    clip.fill(with: .blue)
+    board.clearContents()
+    board.writeObjects([NSImage(cgImage: clip.image!, size: NSSize(width: 6, height: 6))])
+    e.paste(nil)
+    e.commitPendingEdits()
+    let left = pixel(edge, 14, 1)
+    check((left?.b ?? 0) > 200 && (left?.r ?? 255) < 60,
+          "a paste near the right edge is kept whole on the canvas — got \(String(describing: left))")
+    e.window?.close()
+}
+
 windowSection("cut and paste follow the selected layer") {
     let doc = Document(width: 20, height: 20, background: nil)
     doc.selectedLayer?.fill(with: .red)

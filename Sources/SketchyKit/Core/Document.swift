@@ -1207,11 +1207,16 @@ final class Document {
     /// Where an actual-size paste lands when nothing says otherwise: the
     /// top-left of the selection if there is one, and the top-left of the
     /// canvas if there is not.
+    /// A paste that fits the canvas is nudged back onto it rather than having
+    /// its far side cut off by a selection near the edge.
     func pasteCorner(for size: CGSize) -> CGPoint {
         guard let box = selectionPath?.boundingBoxOfPath else {
             return CGPoint(x: 0, y: CGFloat(height) - size.height)
         }
-        return CGPoint(x: box.minX, y: box.maxY - size.height)
+        var corner = CGPoint(x: box.minX, y: box.maxY - size.height)
+        if size.width <= CGFloat(width) { corner.x = corner.x.clamped(to: 0...(CGFloat(width) - size.width)) }
+        if size.height <= CGFloat(height) { corner.y = corner.y.clamped(to: 0...(CGFloat(height) - size.height)) }
+        return corner
     }
 
     @discardableResult

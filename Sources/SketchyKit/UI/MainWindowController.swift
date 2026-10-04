@@ -26,7 +26,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     var dock: DockManager { hub.dock }
     private var documentChip: NSButton?
     private var textOverlay: TextBoxOverlay?
-    private var clipboardImage: CGImage?
+    /// What Sketchy last copied, at full fidelity, with the clipboard state it
+    /// went out as. Shared by every window, and only trusted while nothing
+    /// else has been copied since: the pasteboard's change count says so.
+    private static var lastCopy: (image: CGImage, board: NSPasteboard.Name, changeCount: Int)?
+    /// Where copy and paste go. The system clipboard in the app; the self-test
+    /// swaps in a private one so it never clobbers what the user copied.
+    var pasteboard: NSPasteboard = .general
 
     init(doc: Document, hub: PaletteHub) {
         self.doc = doc
@@ -616,6 +622,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func copy(_ sender: Any?) {
+        // Floating pixels are put down first, or the copy would take the hole
+        // they were lifted out of.
+        commitPendingEdits()
         guard let layer = doc.selectedRasterLayer, let img = layer.image else { return }
         let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
         let box = sel.boundingBoxOfPath.insetBy(dx: -doc.selectionReach, dy: -doc.selectionReach).integral.intersection(doc.bounds)
@@ -626,22 +635,24 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         doc.clipToSelection(cut.context)
         cut.context.draw(img, in: doc.bounds)
         cut.context.restoreGState()
-        clipboardImage = cut.image
-
-        if let cg = clipboardImage {
+        if let cg = cut.image {
             let rep = NSBitmapImageRep(cgImage: cg)
             let nsImage = NSImage(size: NSSize(width: cg.width, height: cg.height))
             nsImage.addRepresentation(rep)
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.writeObjects([nsImage])
+            pasteboard.clearContents()
+            pasteboard.writeObjects([nsImage])
+            MainWindowController.lastCopy = (cg, pasteboard.name, pasteboard.changeCount)
         }
     }
 
     /// The image on the clipboard, preferring what this app last copied so a
     /// round trip through the pasteboard cannot lose anything.
     private var pasteboardImage: CGImage? {
-        if let clipboardImage { return clipboardImage }
-        guard let pasted = NSPasteboard.general
+        if let last = MainWindowController.lastCopy, last.board == pasteboard.name,
+           last.changeCount == pasteboard.changeCount {
+            return last.image
+        }
+        guard let pasted = pasteboard
             .readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage else { return nil }
         return pasted.cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
@@ -666,11 +677,19 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     /// away. At actual size an image bigger than the canvas would silently
     /// lose whatever hung over the edge, so that one case is asked about
     /// first; the scaled pastes are already about the canvas and never ask.
-    private func paste(scale: Document.PasteScale) {
+    /// `intoNewLayer` adds the layer to land on only once the paste is
+    /// certainly happening, so a cancelled one leaves nothing behind.
+    private func paste(scale: Document.PasteScale, intoNewLayer: Bool = false) {
         guard let image = pasteboardImage else { return }
-        guard doc.selectedRasterLayer != nil else { return groupWarning() }
+        guard intoNewLayer || doc.selectedRasterLayer != nil else { return groupWarning() }
         // Whatever was pending is put down first, so the paste is the top step.
         commitPendingEdits()
+        var addedLayer = false
+        func addLayerIfAsked() {
+            guard intoNewLayer, !addedLayer else { return }
+            addedLayer = true
+            doc.addLayer(named: "Pasted Layer")
+        }
 
         if case .actualSize = scale,
            image.width > doc.width || image.height > doc.height {
@@ -688,6 +707,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
             case .keep:
                 // Floating, not drawn: the overhang survives until it is
                 // dragged or resized back into view and committed.
+                addLayerIfAsked()
                 let size = CGSize(width: image.width, height: image.height)
                 engine.beginFloatingPaste(image, at: doc.pasteCorner(for: size))
                 refreshPanels()
@@ -697,6 +717,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
             }
         }
 
+        addLayerIfAsked()
         doc.paste(image, scale: scale, resampling: settings.resampling)
         refreshPanels()
     }
@@ -722,8 +743,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func pasteIntoNewLayer(_ sender: Any?) {
-        doc.addLayer(named: "Pasted Layer")
-        paste(sender)
+        paste(scale: .actualSize, intoNewLayer: true)
     }
 
     /// ⌫ / ⌦: throw away the pending shape if there is one, otherwise erase the
